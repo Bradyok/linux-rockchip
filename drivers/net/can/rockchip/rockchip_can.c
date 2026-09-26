@@ -724,7 +724,7 @@ static int rockchip_can_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	rcan->reset = devm_reset_control_array_get(&pdev->dev, false, false);
+	rcan->reset = devm_reset_control_array_get_exclusive(&pdev->dev);
 	if (IS_ERR(rcan->reset)) {
 		if (PTR_ERR(rcan->reset) != -EPROBE_DEFER)
 			dev_err(&pdev->dev, "failed to get rcan reset lines\n");

@@ -675,7 +675,7 @@ static int avsp_probe(struct platform_device *pdev)
 	avsp->clk_rate_tbl = match_data->clk_rate_tbl;
 	avsp->clk_rate_tbl_num = match_data->clk_rate_tbl_num;
 
-	avsp->reset = devm_reset_control_array_get(dev, false, false);
+	avsp->reset = devm_reset_control_array_get_exclusive(dev);
 	if (IS_ERR(avsp->reset)) {
 		RKAVSP_INFO("failed to get cru reset\n");
 		avsp->reset = NULL;
