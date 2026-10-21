@@ -122,7 +122,7 @@ static irqreturn_t hall_mh248_interrupt(int irq, void *dev_id)
 }
 
 #ifdef CONFIG_ROCKCHIP_LITE_ULTRA_SUSPEND
-static void mh248_syscore_resume(void)
+static void mh248_syscore_resume(void *data)
 {
 	u32 intr_status;
 
@@ -136,8 +136,12 @@ static void mh248_syscore_resume(void)
 	pr_info("%s: GPIO0 INT status =  %x, is_hall_wakeup = %d\n", __func__, intr_status, g_mh248->is_hall_wakeup);
 }
 
-static struct syscore_ops mh248_syscore_ops = {
+static const struct syscore_ops mh248_syscore_ops = {
 	.resume = mh248_syscore_resume,
+};
+
+static struct syscore mh248_syscore = {
+	.ops = &mh248_syscore_ops,
 };
 #endif
 
@@ -241,7 +245,7 @@ static int hall_mh248_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_ROCKCHIP_LITE_ULTRA_SUSPEND
 	mh248->pmu_gpio_regs = devm_ioremap(mh248->dev, mh248->pmu_gpio_regs_base, mh248->pmu_gpio_regs_size);
-	register_syscore_ops(&mh248_syscore_ops);
+	register_syscore(&mh248_syscore);
 	g_mh248 = mh248;
 #endif
 
@@ -253,7 +257,7 @@ static int hall_mh248_probe(struct platform_device *pdev)
 #ifdef CONFIG_ROCKCHIP_LITE_ULTRA_SUSPEND
 static void hall_mh248_remove(struct platform_device *pdev)
 {
-	unregister_syscore_ops(&mh248_syscore_ops);
+	unregister_syscore(&mh248_syscore);
 }
 
 static int mh248_suspend(struct device *dev)

@@ -1228,7 +1228,7 @@ static int rk8xx_apply_reg_reset_config(struct rk808 *rk808)
 	return ret;
 }
 
-static void rk808_syscore_shutdown(void)
+static void rk808_syscore_shutdown(void *data)
 {
 	struct rk808_pmic_entry *entry, *tmp;
 	int processed_count = 0;
@@ -1291,8 +1291,12 @@ static void rk808_syscore_shutdown(void)
 }
 
 /* Syscore operations structure */
-static struct syscore_ops rk808_syscore_ops = {
+static const struct syscore_ops rk808_syscore_ops = {
 	.shutdown = rk808_syscore_shutdown,
+};
+
+static struct syscore rk808_syscore = {
+	.ops = &rk808_syscore_ops,
 };
 
 static void rk808_pmic_list_insert_sorted(struct rk808_pmic_entry *new_entry)
@@ -1340,7 +1344,7 @@ static void rk808_pmic_list_insert_sorted(struct rk808_pmic_entry *new_entry)
 
 	/* If this is the first PMIC, register syscore operations */
 	if (atomic_read(&rk808_pmic_count) == 1) {
-		register_syscore_ops(&rk808_syscore_ops);
+		register_syscore(&rk808_syscore);
 		new_entry->rk808->syscore_registered = true;
 		pr_info("RK808: Registered syscore operations for %d PMIC(s)\n",
 			atomic_read(&rk808_pmic_count));
@@ -2297,7 +2301,7 @@ static void rk808_remove(struct i2c_client *client)
 
 		/* If registry is empty, unregister syscore operations */
 		if (atomic_read(&rk808_pmic_count) == 0 && rk808->syscore_registered) {
-			unregister_syscore_ops(&rk808_syscore_ops);
+			unregister_syscore(&rk808_syscore);
 			pr_info("RK808: Unregistered syscore operations\n");
 		}
 

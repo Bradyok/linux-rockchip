@@ -104,7 +104,7 @@ static void rk_regs_dump(const struct rk_reg_rgn *chip)
 	iounmap(reg);
 }
 
-static int rockchip_pm_syscore_suspend(void)
+static int rockchip_pm_syscore_suspend(void *data)
 {
 	for (; chip_table && chip_table->name; chip_table++)
 		rk_regs_dump(chip_table);
@@ -112,8 +112,12 @@ static int rockchip_pm_syscore_suspend(void)
 	return 0;
 }
 
-static struct syscore_ops rockchip_pm_syscore_ops = {
+static const struct syscore_ops rockchip_pm_syscore_ops = {
 	.suspend = rockchip_pm_syscore_suspend,
+};
+
+static struct syscore rockchip_pm_syscore = {
+	.ops = &rockchip_pm_syscore_ops,
 };
 
 static const struct chip_data_t {
@@ -139,7 +143,7 @@ static int __init rockchip_pm_syscore_init(void)
 		}
 
 		if (chip_table)
-			register_syscore_ops(&rockchip_pm_syscore_ops);
+			register_syscore(&rockchip_pm_syscore);
 	}
 
 	return 0;
