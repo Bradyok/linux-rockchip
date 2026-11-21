@@ -691,6 +691,16 @@ config I2C_GPIO_FAULT_INJECTOR
 	  faults to an I2C bus, so another bus master can be stress-tested.
 	  This is for debugging. If unsure, say 'no'.
 
+config I2C_GPIO_NOVA_COMPATIBLES
+	bool "NovaStar vendor names i2c-gpio1 .. i2c-gpio6"
+	depends on I2C_GPIO
+	help
+	  Also bind the device-tree compatibles "i2c-gpio1" .. "i2c-gpio6",
+	  which the NovaStar COEX board trees give their bit-banged buses
+	  (the RTC, the CX40 Pro's FPGA MIPI camera and retimer buses). The
+	  stock COEX kernel's built-in i2c-gpio matches those names; the
+	  driver is otherwise unchanged.
+
 config I2C_GXP
 	tristate "GXP I2C Interface"
 	depends on ARCH_HPE_GXP || COMPILE_TEST

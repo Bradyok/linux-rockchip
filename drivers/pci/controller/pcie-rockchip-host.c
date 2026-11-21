@@ -111,6 +111,60 @@ static int rockchip_pcie_valid_device(struct rockchip_pcie *rockchip,
 	return 1;
 }
 
+/*
+ * NovaOS: a request below the root port goes out only while the link can carry it.
+ *
+ * With an FPGA endpoint on an RK3399 board, a boot could stop dead at the first config
+ * read below the root port: the console ends at "bridge configuration invalid ([bus 00-00]),
+ * reconfiguring", the next access being the read of 01:00.0's vendor ID; no oops, no RCU
+ * stall, and dw_wdt reset the SoC 30 s later: a read that was never completed, which is
+ * what a link gone between training and scan gives, and nothing after the training re-read
+ * the link. So the link state is read from the client registers (APB, always answered) before
+ * every access below the root port, and a link that is not up fails the access as an empty
+ * slot does: all ones, PCIBIOS_DEVICE_NOT_FOUND. (It narrows the window to the access
+ * itself; it cannot close it: a link that drops between the check and the read still hangs.)
+ */
+static bool rockchip_pcie_link_usable(struct rockchip_pcie *rockchip,
+				      u32 *status1, u32 *ltssm)
+{
+	*status1 = rockchip_pcie_read(rockchip, PCIE_CLIENT_BASIC_STATUS1);
+	*ltssm = rockchip_pcie_read(rockchip, PCIE_CLIENT_DEBUG_OUT_0) &
+		 PCIE_CLIENT_DEBUG_LTSSM_MASK;
+	return PCIE_LINK_UP(*status1);
+}
+
+static bool rockchip_pcie_other_conf_allowed(struct rockchip_pcie *rockchip,
+					     struct pci_bus *bus, u32 devfn,
+					     int where, const char *what)
+{
+	u32 status1, ltssm;
+
+	if (rockchip_pcie_link_usable(rockchip, &status1, &ltssm)) {
+		dev_info_once(rockchip->dev,
+			      "first config access below the root port (%s %02x:%02x.%d +%#x): status1 %#010x, ltssm %#04x\n",
+			      what, bus->number, PCI_SLOT(devfn), PCI_FUNC(devfn), where,
+			      status1, ltssm);
+		return true;
+	}
+
+	dev_err_ratelimited(rockchip->dev,
+			    "config %s %02x:%02x.%d +%#x refused: the link is down (status1 %#010x, ltssm %#04x)\n",
+			    what, bus->number, PCI_SLOT(devfn), PCI_FUNC(devfn), where,
+			    status1, ltssm);
+	return false;
+}
+
+/* read_poll_timeout() op: true once a sample finds the link anything but up and in L0 */
+static bool rockchip_pcie_link_left_l0(struct rockchip_pcie *rockchip,
+				       u32 *status1, u32 *ltssm)
+{
+	return !rockchip_pcie_link_usable(rockchip, status1, ltssm) ||
+	       !PCIE_LINK_IS_L0(*ltssm);
+}
+
+/* How long the trained link must stay up and in L0 before the bus is scanned. */
+#define ROCKCHIP_PCIE_LINK_SETTLE_MS	100
+
 static u8 rockchip_pcie_lane_map(struct rockchip_pcie *rockchip)
 {
 	u32 val;
@@ -198,6 +252,11 @@ static int rockchip_pcie_rd_other_conf(struct rockchip_pcie *rockchip,
 		return PCIBIOS_BAD_REGISTER_NUMBER;
 	}
 
+	if (!rockchip_pcie_other_conf_allowed(rockchip, bus, devfn, where, "read")) {
+		PCI_SET_ERROR_RESPONSE(val);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+
 	if (pci_is_root_bus(bus->parent))
 		rockchip_pcie_cfg_configuration_accesses(rockchip,
 						AXI_WRAPPER_TYPE0_CFG);
@@ -231,6 +290,9 @@ static int rockchip_pcie_wr_other_conf(struct rockchip_pcie *rockchip,
 
 	if (!IS_ALIGNED((uintptr_t)addr, size))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
+
+	if (!rockchip_pcie_other_conf_allowed(rockchip, bus, devfn, where, "write"))
+		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	if (pci_is_root_bus(bus->parent))
 		rockchip_pcie_cfg_configuration_accesses(rockchip,
@@ -330,8 +392,11 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 {
 	struct device *dev = rockchip->dev;
 	int err, i = MAX_LANE_NUM;
-	u32 status;
+	u32 status, status1, ctrl, lane_map_raw;
+	bool lost;
 	int timeouts = 500;
+	/* NovaOS: the lanes this function has powered on, for its own unwind (below) */
+	u8 lanes_on = GENMASK(MAX_LANE_NUM - 1, 0);
 
 	gpiod_set_value_cansleep(rockchip->ep_gpio, 0);
 
@@ -383,7 +448,8 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 				 timeouts * USEC_PER_MSEC);
 	if (err) {
 		dev_err(dev, "LTSSM is not L0!\n");
-		return -ETIMEDOUT;
+		err = -ETIMEDOUT;
+		goto err_power_off_phy;
 	}
 
 	if (rockchip->link_gen == 2) {
@@ -408,6 +474,7 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 
 	/* Check the final link width from negotiated lane counter from MGMT */
 	status = rockchip_pcie_read(rockchip, PCIE_CORE_CTRL);
+	ctrl = status;
 	status = 0x1 << ((status & PCIE_CORE_PL_CONF_LANE_MASK) >>
 			  PCIE_CORE_PL_CONF_LANE_SHIFT);
 	dev_dbg(dev, "current link width is x%d\n", status);
@@ -420,6 +487,23 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 			phy_power_off(rockchip->phys[i]);
 		}
 	}
+	lanes_on = rockchip->lanes_map;
+
+	/*
+	 * NovaOS: say what was trained, at info level (the speed and width above are dev_dbg),
+	 * and which lanes the per-lane PHY model just powered off.
+	 */
+	lane_map_raw = rockchip->legacy_phy ? 0 :
+		       rockchip_pcie_read(rockchip, PCIE_CORE_LANE_MAP);
+	dev_info(dev, "link trained: %s x%d, %s, lanes kept %#x, ltssm %#04x\n",
+		 PCIE_LINK_IS_GEN2(ctrl) ? "5.0 GT/s" : "2.5 GT/s", status,
+		 rockchip->legacy_phy ? "legacy PHY (all lanes left on)" : "per-lane PHYs",
+		 rockchip->lanes_map,
+		 (u32)(rockchip_pcie_read(rockchip, PCIE_CLIENT_DEBUG_OUT_0) &
+		       PCIE_CLIENT_DEBUG_LTSSM_MASK));
+	if (!rockchip->legacy_phy)
+		dev_info(dev, "lane map register %#010x%s\n", lane_map_raw,
+			 lane_map_raw & PCIE_CORE_LANE_MAP_REVERSE ? " (reversed)" : "");
 
 	/* disable ltssm */
 	if (rockchip->dma_trx_enabled)
@@ -449,12 +533,46 @@ static int rockchip_pcie_host_init_port(struct rockchip_pcie *rockchip)
 	status |= PCI_EXP_DEVCTL_PAYLOAD_256B;
 	rockchip_pcie_write(rockchip, status, PCIE_RC_CONFIG_CR + PCI_EXP_DEVCTL);
 
+	/*
+	 * NovaOS: the gen2 retrain and the lane power-off above can each take the trained link
+	 * down, and nothing re-read it before the bus scan. Wait for L0 after the retrain's
+	 * Recovery, then require the link to stay up and in L0 for ROCKCHIP_PCIE_LINK_SETTLE_MS.
+	 * A link that drops (lanes powered off under it, an endpoint still resetting) fails the
+	 * probe here with the reason, instead of hanging the first config read of bus 01.
+	 */
+	err = readl_poll_timeout(rockchip->apb_base + PCIE_CLIENT_DEBUG_OUT_0,
+				 status, PCIE_LINK_IS_L0(status), 20,
+				 500 * USEC_PER_MSEC);
+	if (rockchip_pcie_link_left_l0(rockchip, &status1, &status)) {
+		dev_err(dev, "link not back in L0 after training (status1 %#010x, ltssm %#04x)%s: not scanning the bus\n",
+			status1, status,
+			rockchip->legacy_phy ? "" : "; were lanes it uses powered off?");
+		err = -ENOLINK;
+		goto err_power_off_phy;
+	}
+	err = read_poll_timeout(rockchip_pcie_link_left_l0, lost, lost, 1000,
+				ROCKCHIP_PCIE_LINK_SETTLE_MS * USEC_PER_MSEC, false,
+				rockchip, &status1, &status);
+	if (!err) {
+		dev_err(dev, "link left L0 within %d ms of training (status1 %#010x, ltssm %#04x): not scanning the bus\n",
+			ROCKCHIP_PCIE_LINK_SETTLE_MS, status1,
+			status);
+		err = -ENOLINK;
+		goto err_power_off_phy;
+	}
+
 	return 0;
+	/*
+	 * NovaOS: every failure after rockchip_pcie_init_port() gives the PHYs back here, exactly once:
+	 * powered-on lanes off (lanes_on: all of them until the unused ones were idled above), then
+	 * phy_exit() for each lane, so the PHY core's init_count and power_count are where this function
+	 * found them. Its callers then never release the PHYs again (rockchip_pcie_really_probe).
+	 */
 err_power_off_phy:
-	while (i--)
-		phy_power_off(rockchip->phys[i]);
-	i = MAX_LANE_NUM;
-	while (i--)
+	for (i = 0; i < MAX_LANE_NUM; i++)
+		if (lanes_on & BIT(i))
+			phy_power_off(rockchip->phys[i]);
+	for (i = 0; i < MAX_LANE_NUM; i++)
 		phy_exit(rockchip->phys[i]);
 	return err;
 }
@@ -1062,6 +1180,13 @@ err_disable_0v9:
 	return err;
 }
 
+/*
+ * NovaOS: on failure the PHYs are released here, once: rockchip_pcie_host_init_port() already gave
+ * them back on its own failures, and a failure after it releases them below. The probe's error path
+ * no longer releases them a second time (it did, after a failed training: the PHY core's counts went
+ * below zero, and every later probe of the module failed with "phy_power_on was called before
+ * phy_init", "pll lock timeout!" until the SoC reset).
+ */
 static int rockchip_pcie_really_probe(struct rockchip_pcie *rockchip)
 {
 	int err;
@@ -1072,20 +1197,28 @@ static int rockchip_pcie_really_probe(struct rockchip_pcie *rockchip)
 
 	err = rockchip_pcie_setup_irq(rockchip);
 	if (err)
-		return err;
+		goto err_deinit_phys;
 
 	rockchip_pcie_enable_interrupts(rockchip);
 
 	err = rockchip_pcie_cfg_atu(rockchip);
 	if (err)
-		return err;
+		goto err_deinit_phys;
 
 	rockchip->bridge->sysdata = rockchip;
 	rockchip->bridge->ops = &rockchip_pcie_ops;
 
 	device_init_wakeup(rockchip->dev, true);
 
-	return pci_host_probe(rockchip->bridge);
+	err = pci_host_probe(rockchip->bridge);
+	if (err)
+		goto err_deinit_phys;
+
+	return 0;
+
+err_deinit_phys:
+	rockchip_pcie_deinit_phys(rockchip);
+	return err;
 }
 
 static ssize_t pcie_deferred_store(struct device *dev,
@@ -1198,7 +1331,8 @@ static int rockchip_pcie_probe(struct platform_device *pdev)
 		err = rockchip_pcie_really_probe(rockchip);
 		if (err) {
 			dev_err(&pdev->dev, "deferred probe failed\n");
-			goto err_deinit_port;
+			/* NovaOS: the PHYs are already released (rockchip_pcie_really_probe) */
+			goto err_remove_irq_domain;
 		}
 	}
 

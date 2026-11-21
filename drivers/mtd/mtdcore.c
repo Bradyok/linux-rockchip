@@ -699,12 +699,32 @@ int add_mtd_device(struct mtd_info *mtd)
 	if (ofidx >= 0)
 		i = idr_alloc(&mtd_idr, mtd, ofidx, ofidx + 1, GFP_KERNEL);
 	else
+#ifndef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
 		i = idr_alloc(&mtd_idr, mtd, 0, 0, GFP_KERNEL);
+#else
+		/*
+		 * N-series stock add_mtd_device @ 0xffffff80087b2110 +0x1a0..+0x1d8:
+		 * idr_alloc(&mtd_idr, mtd, mtd->index, 0, GFP_KERNEL) -- the id starts at the
+		 * driver's mtd->index (the spi-nor "mtdindex"; 0 for every other MTD, whose
+		 * mtd_info is zeroed) with no upper bound, so a taken number moves the device to
+		 * the next free one rather than failing -- then, on success, the vendor line
+		 * (format @ 0xffffff80091b1a5f, no log level) before mtd->index = i. The stock
+		 * kernel has no "mtd" alias lookup; an aliased MTD keeps 6.12's exact-id path above.
+		 * Only on a board whose DT carries mtdindex (mtd_nova_mtdindex_board); elsewhere
+		 * the allocation is 6.12's, from 0.
+		 */
+		i = idr_alloc(&mtd_idr, mtd, mtd_nova_mtdindex_board() ? mtd->index : 0, 0,
+			      GFP_KERNEL);
+#endif
 	if (i < 0) {
 		error = i;
 		goto fail_locked;
 	}
 
+#ifdef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
+	if (mtd_nova_mtdindex_board())
+		printk("mtd devtree set start index:[%d], final index:[%d]\n", mtd->index, i);
+#endif
 	mtd->index = i;
 	kref_init(&mtd->refcnt);
 

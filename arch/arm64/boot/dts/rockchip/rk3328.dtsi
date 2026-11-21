@@ -946,7 +946,24 @@
 		};
 	};
 
-	h265e_mmu: iommu@ff330200 {
+	vepu22: vepu22@ff330000 {
+		compatible = "rockchip,hevc-encoder-v22";
+		reg = <0x0 0xff330000 0x0 0x200>;
+		interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&cru ACLK_H265>, <&cru PCLK_H265>,
+			 <&cru SCLK_VENC_CORE>, <&cru SCLK_VENC_DSP>,
+			 <&cru ACLK_RKVENC>, <&cru ACLK_AXISRAM>;
+		clock-names = "aclk_h265", "pclk_h265",
+			      "clk_core", "clk_dsp",
+			      "aclk_venc", "aclk_axi2sram";
+		iommus = <&vepu22_mmu>;
+		rockchip,srv = <&mpp_srv>;
+		rockchip,taskqueue-node = <2>;
+		power-domains = <&power RK3328_PD_HEVC>;
+		status = "disabled";
+	};
+
+	vepu22_mmu: h265e_mmu: iommu@ff330200 {
 		compatible = "rockchip,iommu";
 		reg = <0x0 0xff330200 0 0x100>;
 		interrupts = <GIC_SPI 96 IRQ_TYPE_LEVEL_HIGH>;

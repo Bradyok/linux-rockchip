@@ -5,6 +5,19 @@ config DMABUF_HEAPS_SYSTEM
 	  Choose this option to enable the system dmabuf heap. The system heap
 	  is backed by pages from the buddy allocator. If in doubt, say Y.
 
+config DMABUF_HEAPS_SYSTEM_DMA32
+	bool "DMA-BUF System Heap: the system-dma32 and system-uncached-dma32 heaps"
+	depends on DMABUF_HEAPS_SYSTEM && ZONE_DMA32
+	help
+	  Also register the system heap's buffers from ZONE_DMA32 under the
+	  names Rockchip's 5.10/6.1 system heap used, "system-dma32" and
+	  "system-uncached-dma32". A Rockchip MPP from before its dma-heap
+	  name fallback (the PixelHue N-series stock encoder's) opens
+	  /dev/dma_heap/system-uncached-dma32 for its default buffers and
+	  fails without it. The two heaps are registered only on a board
+	  whose device tree root has nova,dma-heap-dma32. Unset, the system
+	  heap is unchanged.
+
 config DMABUF_HEAPS_CMA
 	bool "DMA-BUF CMA Heap"
 	depends on DMABUF_HEAPS && DMA_CMA

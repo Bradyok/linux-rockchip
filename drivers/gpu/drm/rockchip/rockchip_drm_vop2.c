@@ -647,6 +647,8 @@ struct vop2_video_port {
 	uint8_t id;
 	bool layer_sel_update;
 	bool xmirror_en;
+	/* NovaOS 0066: "nova,plane-ymirror" -- every plane on this VP is scanned bottom-up */
+	bool plane_ymirror;
 	bool need_reset_p2i_flag;
 	atomic_t post_buf_empty_flag;
 	unsigned long dclk_max;
@@ -7669,6 +7671,9 @@ static int vop2_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_st
 
 	vpstate->xmirror_en = (pstate->rotation & DRM_MODE_REFLECT_X) ? 1 : 0;
 	vpstate->ymirror_en = (pstate->rotation & DRM_MODE_REFLECT_Y) ? 1 : 0;
+	/* NovaOS 0066: the VP's fixed reflection, on top of what the plane asked for */
+	if (vp->plane_ymirror)
+		vpstate->ymirror_en ^= 1;
 	vpstate->rotate_270_en = (pstate->rotation & DRM_MODE_ROTATE_270) ? 1 : 0;
 	vpstate->rotate_90_en = (pstate->rotation & DRM_MODE_ROTATE_90) ? 1 : 0;
 
@@ -7683,8 +7688,12 @@ static int vop2_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_st
 	if (ret)
 		return ret;
 
+	/*
+	 * A fully clipped plane is a valid state (a TEST_ONLY commit before the CRTC is
+	 * enabled clips to 0x0, drm_atomic_helper.c), and this path returns success.
+	 */
 	if (!pstate->visible) {
-		DRM_ERROR("%s is invisible(src: pos[%d, %d] rect[%d x %d] dst: pos[%d, %d] rect[%d x %d]\n",
+		DRM_DEBUG_ATOMIC("%s is invisible(src: pos[%d, %d] rect[%d x %d] dst: pos[%d, %d] rect[%d x %d]\n",
 			  plane->name, pstate->src_x >> 16, pstate->src_y >> 16, pstate->src_w >> 16,
 			  pstate->src_h >> 16, pstate->crtc_x, pstate->crtc_y, pstate->crtc_w,
 			  pstate->crtc_h);
@@ -18992,7 +19001,14 @@ static int vop2_create_crtc(struct vop2 *vop2, uint8_t enabled_vp_mask)
 		}
 
 		ret = vop2_plane_init(vop2, win, possible_crtcs);
-		if (ret)
+		/*
+		 * -EACCES is vop2_plane_init() declining a window by configuration: an AFBC
+		 * window with disable_afbc_win, a Cluster sub-window without
+		 * support-multi-area, a VOP3 Esmart in line-buffer mode. Nothing failed.
+		 */
+		if (ret == -EACCES)
+			DRM_DEBUG_KMS("overlay plane %s not registered by configuration\n", win->name);
+		else if (ret)
 			DRM_WARN("failed to init overlay plane %s\n", win->name);
 	}
 
@@ -19646,7 +19662,7 @@ static int rockchip_vop2_devfreq_init(struct vop2 *vop2)
 	of_property_read_u32(vop2->dev->of_node, "rockchip,aclk-advanced-mode-rates",
 			     &vop2->aclk_mode_rate[ROCKCHIP_VOP_ACLK_ADVANCED_MODE]);
 
-	dev_err(vop2->dev, "Supported VOP aclk dvfs, normal mode:%d, reset mode:%d, advanced mode:%d\n",
+	dev_info(vop2->dev, "Supported VOP aclk dvfs, normal mode:%d, reset mode:%d, advanced mode:%d\n",
 			   vop2->aclk_mode_rate[ROCKCHIP_VOP_ACLK_NORMAL_MODE],
 			   vop2->aclk_mode_rate[ROCKCHIP_VOP_ACLK_RESET_MODE],
 			   vop2->aclk_mode_rate[ROCKCHIP_VOP_ACLK_ADVANCED_MODE]);
@@ -20034,6 +20050,7 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 				vop2->vps[vp_id].reserved_plane_phy_id = ROCKCHIP_VOP2_PHY_ID_INVALID;
 			}
 			vop2->vps[vp_id].xmirror_en = of_property_read_bool(child, "xmirror-enable");
+			vop2->vps[vp_id].plane_ymirror = of_property_read_bool(child, "nova,plane-ymirror");
 
 			ret = of_clk_set_defaults(child, false);
 			if (ret) {

@@ -23,6 +23,7 @@
 #include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/of.h>
 #include <linux/reboot.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
@@ -182,6 +183,17 @@ static struct watchdog_device softdog_dev = {
 static int __init softdog_init(void)
 {
 	int ret;
+
+	/*
+	 * NovaStar: one kernel for every board.
+	 * Built in, softdog registers only where the board's DT root node asks for it with
+	 * nova,softdog (the N-series, whose dw_wdt reset does not bring the board back); on any
+	 * other board the SoC watchdog stays the only one, /dev/watchdog0, as on a kernel without
+	 * softdog. Loaded as a module, or on a system with no device tree, it is not gated.
+	 */
+	if (IS_BUILTIN(CONFIG_SOFT_WATCHDOG) && of_root &&
+	    !of_property_read_bool(of_root, "nova,softdog"))
+		return -ENODEV;
 
 	watchdog_init_timeout(&softdog_dev, soft_margin, NULL);
 	watchdog_set_nowayout(&softdog_dev, nowayout);

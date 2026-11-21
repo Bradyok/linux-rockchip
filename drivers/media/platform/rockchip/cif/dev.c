@@ -2024,7 +2024,7 @@ static int rkcif_create_link(struct rkcif_device *dev,
 					}
 				}
 			}
-			if (dev->chip_id > CHIP_RK1808_CIF) {
+			if (dev->is_support_tools) {	/* NovaOS 0065: no links to unregistered tools nodes */
 				for (id = 0; id < RKCIF_MAX_TOOLS_CH; id++) {
 					source_entity = &linked_sensor.sd->entity;
 					sink_entity = &dev->tools_vdev[id].vnode.vdev.entity;
@@ -2447,7 +2447,13 @@ static int rkcif_register_platform_subdevs(struct rkcif_device *cif_dev)
 			goto err_unreg_stream_vdev;
 		}
 	}
-	if (cif_dev->chip_id > CHIP_RK1808_CIF) {
+	/*
+	 * NovaOS 0065: "nova,no-tools-vdev" keeps the three rkcif_tools_id<n> nodes out, so the
+	 * ISP video nodes number as on the stock 4.19 kernel (which has no tools nodes): the stock
+	 * COEX mvr_mjpeg opens /dev/video5 by number and expects rkisp_mainpath there.
+	 */
+	if (cif_dev->chip_id > CHIP_RK1808_CIF &&
+	    !of_property_read_bool(cif_dev->dev->of_node, "nova,no-tools-vdev")) {
 		ret = rkcif_register_tools_vdevs(cif_dev, RKCIF_MAX_TOOLS_CH, true);
 
 		if (ret < 0) {
@@ -2476,7 +2482,7 @@ err_unreg_stream_vdev:
 	    cif_dev->chip_id != CHIP_RV1103B_CIF)
 		rkcif_unregister_scale_vdevs(cif_dev, RKCIF_MAX_SCALE_CH);
 
-	if (cif_dev->chip_id > CHIP_RK1808_CIF)
+	if (cif_dev->is_support_tools)	/* NovaOS 0065: only what was registered */
 		rkcif_unregister_tools_vdevs(cif_dev, RKCIF_MAX_TOOLS_CH);
 
 	return ret;

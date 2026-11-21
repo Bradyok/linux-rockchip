@@ -386,7 +386,7 @@ extern char* osl_get_rtctime(void);
 #define OSL_GET_RTCTIME()	osl_get_rtctime()
 /* RTC format %02d:%02d:%02d.%06lu, LEN including the trailing null space */
 #define RTC_TIME_BUF_LEN	16u
-#define	printf(fmt, args...)	printk(PERCENT_S DHD_LOG_PREFIXS fmt, PRINTF_SYSTEM_TIME, ## args)
+#define	printf(fmt, args...)	printk(KERN_INFO PERCENT_S DHD_LOG_PREFIXS fmt, PRINTF_SYSTEM_TIME, ## args)
 #define	vprintf(fmt, ap)	vprintk(fmt, ap)
 #include <linux/kernel.h>	/* for vsn/printf's */
 #include <linux/string.h>	/* for mem*, str* */

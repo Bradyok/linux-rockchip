@@ -17,12 +17,70 @@ static const struct drm_encoder_funcs vkms_encoder_funcs = {
 	.destroy = drm_encoder_cleanup,
 };
 
+/*
+ * NovaStar V-series: the seven fixed modes the vendor's vkms offers instead of the
+ * drm_add_modes_noedid() list -- the struct drm_display_mode array at 0xffffff80094c2d50
+ * (stride 0xf0) that vkms_add_modes walks. Values as stored there: name, type 0x40
+ * (DRIVER), clock, h/v timings, flags (5 = +hsync +vsync, 0xa = -hsync -vsync) and
+ * picture_aspect_ratio (2 = 16:9, 1 = 4:3, 0 = none). Entry 1 is the vendor's own: named
+ * 1920x1080 with the 1080p60 timing but a 24750 kHz clock (its 4.19 vrefresh field says
+ * 10), so the simulated vblank -- and with it every page flip -- runs at 10 Hz.
+ */
+static const struct drm_display_mode vkms_vendor_modes[] = {
+	{ DRM_MODE("3840x2160", DRM_MODE_TYPE_DRIVER, 594000, 3840, 4016, 4104, 4400, 0,
+		   2160, 2168, 2178, 2250, 0, DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9 },
+	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 24750, 1920, 2008, 2052, 2200, 0,
+		   1080, 1084, 1089, 1125, 0, DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9 },
+	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1390, 1430, 1650, 0,
+		   720, 725, 730, 750, 0, DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9 },
+	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1720, 1760, 1980, 0,
+		   720, 725, 730, 750, 0, DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9 },
+	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 65000, 1024, 1048, 1184, 1344, 0,
+		   768, 771, 777, 806, 0, DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC) },
+	{ DRM_MODE("720x576", DRM_MODE_TYPE_DRIVER, 27000, 720, 732, 796, 864, 0,
+		   576, 581, 586, 625, 0, DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_4_3 },
+	{ DRM_MODE("720x480", DRM_MODE_TYPE_DRIVER, 27000, 720, 736, 798, 858, 0,
+		   480, 489, 495, 525, 0, DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_4_3 },
+};
+
+/*
+ * vkms_add_modes @ 0xffffff800862b0b0: drm_mode_duplicate() each of the seven entries
+ * (loop count 7, +0x18) and drm_mode_probed_add() the ones that duplicated; returns how
+ * many were added.
+ */
+int vkms_add_modes(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+	int count = 0;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(vkms_vendor_modes); i++) {
+		mode = drm_mode_duplicate(connector->dev, &vkms_vendor_modes[i]);
+		if (!mode)
+			continue;
+		count++;
+		drm_mode_probed_add(connector, mode);
+	}
+
+	return count;
+}
+
+/*
+ * vkms_conn_get_modes @ 0xffffff800862b11c: the vendor's fixed list, with 1920x1080
+ * preferred (drm_set_preferred_mode(connector, 0x780, 0x438), +0x20..+0x30).
+ */
 static int vkms_conn_get_modes(struct drm_connector *connector)
 {
 	int count;
 
-	count = drm_add_modes_noedid(connector, XRES_MAX, YRES_MAX);
-	drm_set_preferred_mode(connector, XRES_DEF, YRES_DEF);
+	count = vkms_add_modes(connector);
+	drm_set_preferred_mode(connector, 1920, 1080);
 
 	return count;
 }
@@ -110,6 +168,14 @@ int vkms_output_init(struct vkms_device *vkmsdev, int index)
 	}
 
 	drm_mode_config_reset(dev);
+
+	/*
+	 * NovaStar V-series, vkms_output_init @ 0xffffff800862b160 +0x16c..+0x18c: after the mode
+	 * config reset, bring up /dev/vkms_misc; a failure is logged and the output still
+	 * initialises (w19 = 0, +0x180).
+	 */
+	if (vkms_misc_init(&output->vkms_misc))
+		DRM_ERROR("[zmh]Failed to init vkms misc\n");
 
 	return 0;
 

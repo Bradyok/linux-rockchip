@@ -10,6 +10,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 
@@ -39,11 +40,17 @@
 
 static struct vkms_config *default_config;
 
-static bool enable_cursor = true;
+/*
+ * NovaStar V-series: the vendor's vkms has one primary plane and nothing else --
+ * vkms_output_init @ 0xffffff800862b160 calls vkms_crtc_init(dev, crtc, primary, NULL)
+ * (x3 = 0 @ +0x68) and creates no writeback connector -- so both default off here;
+ * the parameters still turn them on.
+ */
+static bool enable_cursor;
 module_param_named(enable_cursor, enable_cursor, bool, 0444);
 MODULE_PARM_DESC(enable_cursor, "Enable/Disable cursor support");
 
-static bool enable_writeback = true;
+static bool enable_writeback;
 module_param_named(enable_writeback, enable_writeback, bool, 0444);
 MODULE_PARM_DESC(enable_writeback, "Enable/Disable writeback connector support");
 
@@ -158,8 +165,14 @@ static int vkms_modeset_init(struct vkms_device *vkmsdev)
 		return ret;
 
 	dev->mode_config.funcs = &vkms_mode_funcs;
-	dev->mode_config.min_width = XRES_MIN;
-	dev->mode_config.min_height = YRES_MIN;
+	/*
+	 * NovaStar V-series, vkms_init @ 0xffffff800929e4b8 +0x134..+0x148: min 800x600 (one
+	 * store of 0x0000025800000320 to mode_config.min_width/min_height), max 8192x8192.
+	 * libhal_bsp hal_vkms_init @ 0x14a64c refuses an image outside 800..8192 x
+	 * 600..8192 the same way (hal_vkms.c:0x4d).
+	 */
+	dev->mode_config.min_width = 800;
+	dev->mode_config.min_height = 600;
 	dev->mode_config.max_width = XRES_MAX;
 	dev->mode_config.max_height = YRES_MAX;
 	dev->mode_config.cursor_width = 512;
@@ -223,12 +236,15 @@ static int vkms_create(struct vkms_config *config)
 
 	ret = drm_dev_register(&vkms_device->drm, 0);
 	if (ret)
-		goto out_devres;
+		goto out_misc;
 
 	drm_fbdev_shmem_setup(&vkms_device->drm, 0);
 
 	return 0;
 
+out_misc:
+	/* the /dev/vkms_misc vkms_output_init registered (see vkms_misc_deinit) */
+	vkms_misc_deinit(&vkms_device->output.vkms_misc);
 out_devres:
 	devres_release_group(&pdev->dev, NULL);
 out_unregister:
@@ -241,6 +257,18 @@ static int __init vkms_init(void)
 	int ret;
 	struct vkms_config *config;
 
+	/*
+	 * One kernel for every NovaStar board: built in,
+	 * this vkms makes its card only on a board whose DT root node has nova,vkms-osd (the
+	 * V-series, models/vseries/dts/rk3566-evb2-lp4x-v10-nova.dtsi), so no other board gains a
+	 * virtual DRM card or /dev/vkms_misc. Loaded as a module, or with no device tree, it
+	 * always makes one. The V-series, N-series and COEX trees share the EVB2's machine
+	 * compatible, so a property, not a compatible, names the board.
+	 */
+	if (IS_BUILTIN(CONFIG_DRM_VKMS) && of_root &&
+	    !of_property_read_bool(of_root, "nova,vkms-osd"))
+		return -ENODEV;
+
 	config = kmalloc(sizeof(*config), GFP_KERNEL);
 	if (!config)
 		return -ENOMEM;
@@ -252,10 +280,19 @@ static int __init vkms_init(void)
 	ret = vkms_create(config);
 	if (ret) {
 		kfree(config);
+		/* NovaStar V-series, vkms_init @ 0xffffff800929e4b8 +0x114..+0x120 */
+		DRM_ERROR("[zmh]%s, err", __func__);
 		return ret;
 	}
 
 	default_config = config;
+
+	/*
+	 * NovaStar V-series, vkms_init @ 0xffffff800929e4b8 +0x170..+0x17c: "\0016[drm] [zmh]%s, ok"
+	 * (@ 0xffffff80091351bc) -- stock boot log "[drm] [zmh]vkms_init, ok",
+	 * as a VX1000 Pro prints it.
+	 */
+	DRM_INFO("[zmh]%s, ok", __func__);
 
 	return 0;
 }
@@ -271,6 +308,7 @@ static void vkms_destroy(struct vkms_config *config)
 
 	pdev = config->dev->platform;
 
+	vkms_misc_deinit(&config->dev->output.vkms_misc);
 	drm_dev_unregister(&config->dev->drm);
 	drm_atomic_helper_shutdown(&config->dev->drm);
 	devres_release_group(&pdev->dev, NULL);

@@ -94,6 +94,14 @@ obj-$(CONFIG_NXP_CBTX_PHY)	+= nxp-cbtx.o
 obj-$(CONFIG_NXP_TJA11XX_PHY)	+= nxp-tja11xx.o
 obj-y				+= qcom/
 obj-$(CONFIG_QSEMI_PHY)		+= qsemi.o
+# The RTL8367C SDK is transcribed 1:1 from the vendor kernel and keeps its
+# "a & b | c" bit-op idiom verbatim (see nova_kseries.c); silence -Wparentheses for it.
+CFLAGS_nova_kseries.o += -Wno-parentheses
+# One object for the three NovaStar switch legs (all bool): built when any of them is, since the
+# board's device tree picks the leg at boot (nova,switch) and they build together.
+ifneq ($(CONFIG_NOVA_KSERIES_SWITCH)$(CONFIG_NOVA_NSERIES_SWITCH)$(CONFIG_NOVA_COEX_RTL8363),)
+obj-y				+= nova_kseries.o
+endif
 obj-$(CONFIG_REALTEK_PHY)	+= realtek.o
 obj-$(CONFIG_RENESAS_PHY)	+= uPD60620.o
 obj-$(CONFIG_ROCKCHIP_FEPHY)	+= rockchip-fephy.o

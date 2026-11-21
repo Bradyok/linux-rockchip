@@ -3719,8 +3719,21 @@ static int spi_nor_set_mtd_info(struct spi_nor *nor)
 	if (!mtd->name)
 		mtd->name = dev_name(dev);
 
+#ifndef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
 	if (IS_ENABLED(CONFIG_SPI_ROCKCHIP_SFC))
 		mtd->name = "sfc_nor";
+#else
+	/*
+	 * The N-series stock spi_nor_scan (@ 0xffffff80087bc3a0 +0x138..+0x14c) only fills a
+	 * missing name with dev_name() and renames nothing; its kernel does not build the spi-mem
+	 * SFC driver (ikconfig: no SPI_ROCKCHIP_SFC; "sfc_nor" is only the rkflash
+	 * sfc_nor_mtd_init @ 0xffffff8008ad8d4c +0x94, another driver). The FPGA flash is
+	 * therefore "spi2.0" in the stock /proc/mtd, and stays so here -- on a board whose DT
+	 * carries mtdindex (mtd_nova_mtdindex_board); every other board keeps the BSP rename.
+	 */
+	if (IS_ENABLED(CONFIG_SPI_ROCKCHIP_SFC) && !mtd_nova_mtdindex_board())
+		mtd->name = "sfc_nor";
+#endif
 
 	mtd->type = MTD_NORFLASH;
 	mtd->flags = MTD_CAP_NORFLASH;
@@ -3992,10 +4005,33 @@ static int spi_nor_probe(struct spi_mem *spimem)
 	const struct spi_nor_hwcaps hwcaps = { .mask = SNOR_HWCAPS_ALL };
 	char *flash_name;
 	int ret;
+#ifdef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
+	bool nova_mtdindex = mtd_nova_mtdindex_board();
+	u32 mtdindex = 0;
+#endif
 
 	nor = devm_kzalloc(&spi->dev, sizeof(*nor), GFP_KERNEL);
 	if (!nor)
 		return -ENOMEM;
+
+#ifdef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
+	/*
+	 * N-series stock m25p_probe @ 0xffffff80087b9ec0 +0x64..+0x98 and +0x194..+0x1a4: right
+	 * after the devm allocation, of_property_read_u32(spi->dev.of_node, "mtdindex") into a
+	 * local that starts at 0; a failed read prints the error string (@ 0xffffff80091b274c)
+	 * and uses 0, a good one prints the value (@ 0xffffff80091b2772). Both printk with no
+	 * log level, as the vendor. Only on a board whose DT carries mtdindex
+	 * (mtd_nova_mtdindex_board); every other board reads nothing and logs nothing.
+	 */
+	if (nova_mtdindex) {
+		if (of_property_read_u32(spi->dev.of_node, "mtdindex", &mtdindex) < 0) {
+			printk("mtdindex of_property_read_u32 error \n");
+			mtdindex = 0;
+		} else {
+			printk("device tree mtdindex:[%d]\n", mtdindex);
+		}
+	}
+#endif
 
 	nor->spimem = spimem;
 	nor->dev = &spi->dev;
@@ -4006,8 +4042,14 @@ static int spi_nor_probe(struct spi_mem *spimem)
 	if (data && data->name)
 		nor->mtd.name = data->name;
 
-	if (!nor->mtd.name)
+	if (!nor->mtd.name) {
+#ifdef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
+		/* stock m25p_probe +0x1c8: logged before naming it (@ 0xffffff80091b278d) */
+		if (nova_mtdindex)
+			printk("!nor->mtd.name \n");
+#endif
 		nor->mtd.name = spi_mem_get_name(spimem);
+	}
 
 	/*
 	 * For some (historical?) reason many platforms provide two different
@@ -4025,6 +4067,16 @@ static int spi_nor_probe(struct spi_mem *spimem)
 	ret = spi_nor_scan(nor, flash_name, &hwcaps);
 	if (ret)
 		return ret;
+
+#ifdef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
+	/*
+	 * stock m25p_probe +0x154..+0x158, straight after a successful spi_nor_scan: the value
+	 * becomes mtd->index (mtd_info +0x40), which add_mtd_device takes as the lowest id to
+	 * allocate. A flash that fails the scan (the N20's empty spi1: "unrecognized JEDEC id
+	 * bytes: ff, ff, ff") registers nothing and holds no number.
+	 */
+	nor->mtd.index = mtdindex;
+#endif
 
 	spi_nor_debugfs_register(nor);
 

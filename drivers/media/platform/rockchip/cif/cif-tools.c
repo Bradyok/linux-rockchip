@@ -176,10 +176,21 @@ static int rkcif_tools_set_fmt(struct rkcif_tools_vdev *tools_vdev,
 		    stream->scale_vdev) {
 			if (stream->scale_vdev->state != RKCIF_STATE_STREAMING)
 				rkcif_scale_set_fmt(stream->scale_vdev, pixm, try);
+			/* NovaOS 0064: no scaler output format yet -- refuse, never keep NULL */
+			if (!stream->scale_vdev->scale_out_fmt)
+				return -EINVAL;
 			*pixm = stream->scale_vdev->pixm;
 			tools_vdev->tools_out_fmt = stream->scale_vdev->scale_out_fmt;
 			tools_vdev->is_cap_scale = true;
 		} else {
+			/*
+			 * NovaOS 0064: the stream has no output format until a sensor or an
+			 * S_FMT on the stream gave it one (no sensor answers on the CX40 Pro's
+			 * FPGA MIPI ports); a NULL tools_out_fmt here was dereferenced by
+			 * rkcif_tools_vb2_queue_setup on the next REQBUFS.
+			 */
+			if (!stream->cif_fmt_out)
+				return -EINVAL;
 			*pixm = stream->pixm;
 			tools_vdev->tools_out_fmt = stream->cif_fmt_out;
 			tools_vdev->is_cap_scale = false;
@@ -415,6 +426,9 @@ static int rkcif_tools_vb2_queue_setup(struct vb2_queue *queue,
 
 	pixm = &tools_vdev->pixm;
 	cif_fmt = tools_vdev->tools_out_fmt;
+	/* NovaOS 0064: REQBUFS before any usable format (see rkcif_tools_set_fmt) */
+	if (!cif_fmt)
+		return -EINVAL;
 	*num_planes = cif_fmt->mplanes;
 
 	for (i = 0; i < cif_fmt->mplanes; i++) {

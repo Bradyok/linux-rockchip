@@ -778,6 +778,8 @@ static int compensate_leakage(int lkg)
 	return milli_degree;
 }
 
+void dump_virtual_temperature(void);
+
 void dump_virtual_temperature(void)
 {
 	struct virtual_thermal_data *ctx = platform_get_drvdata(platform_dev);

@@ -21,6 +21,7 @@
 #include "gt1x.h"
 #include "gt1x_generic.h"
 #include "gt1x_cfg.h"
+#include <linux/of.h>
 #if GTP_PROXIMITY && defined(PLATFORM_MTK)
 #include <linux/hwmsensor.h>
 #include <linux/hwmsen_dev.h>
@@ -591,6 +592,32 @@ s32 gt1x_init_panel(void)
 	if (gt1x_gt5688) {
 		cfgs[0] = gtp_dat_5688;
 		cfg_lens[0] = CFG_GROUP_LEN(gtp_dat_5688);
+	}
+
+	/*
+	 * A board's own config groups, from its DT: "goodix,cfg-group<N>" (N = the sensor ID 0-5,
+	 * the byte-array binding the gt9xx driver beside this one reads) replaces compiled group N.
+	 * The groups above are Goodix's samples ("send this config should cause the chip cannot
+	 * work normally", gt1x_generic.h), and gt1x_send_cfg() stores whatever it sends in the
+	 * controller's flash, so a board whose panel needs other values must be able to name them.
+	 * A group outside GTP_CONFIG_MIN_LENGTH..GTP_CONFIG_MAX_LENGTH is refused below exactly as
+	 * a compiled one is. No property: the compiled group, as before.
+	 */
+	if (gt1x_i2c_client && gt1x_i2c_client->dev.of_node) {
+		struct device_node *np = gt1x_i2c_client->dev.of_node;
+		char name[20];
+		const u8 *dt_cfg;
+		int dt_len, i;
+
+		for (i = 0; i < ARRAY_SIZE(cfgs); i++) {
+			snprintf(name, sizeof(name), "goodix,cfg-group%d", i);
+			dt_cfg = of_get_property(np, name, &dt_len);
+			if (!dt_cfg)
+				continue;
+			cfgs[i] = dt_cfg;
+			cfg_lens[i] = dt_len > GTP_CONFIG_MAX_LENGTH ? 0 : dt_len;
+			GTP_INFO("Config group%d from the device tree, length:%d", i, dt_len);
+		}
 	}
 
 	GTP_DEBUG("Config groups length:%d,%d,%d,%d,%d,%d", cfg_lens[0], cfg_lens[1], cfg_lens[2], cfg_lens[3], cfg_lens[4], cfg_lens[5]);

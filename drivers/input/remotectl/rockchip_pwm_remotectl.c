@@ -131,6 +131,121 @@ static void rk_pwm_int_ctrl_v4(struct platform_device *pdev, int work_mode);
 
 static struct rkxx_remotectl_button *remotectl_button;
 
+/* NovaStar TU carriers: the stock 4.19 driver carries three NovaStar additions (in the
+ * stock Image: the rk_pwm_* and remotectl_* functions and the status_* functions at
+ * 0xffffff8008995xxx):
+ *  - rk_pwm_int_ctrl_enable / rk_pwm_int_ctrl_disable, exported, masking this driver's PWM
+ *    channel interrupt through the probed instance kept in pddata_g -- the IR half of the
+ *    NovaStar low_power_ctrl driver's "enable"/"disable";
+ *  - the key reports consult that driver's flag (low_power_ctrl_get_state) and are dropped
+ *    while it is set;
+ *  - an "rk_pwm" class with /sys/class/rk_pwm/rk_pwm_status/status, which the vendor control
+ *    HAL (vendor/lib64/hw/novastar.hardware.control@1.0-impl.so) names.
+ * The stock flag driver is built in and these call it directly; here it is a module and this
+ * driver is built in, so the flag is read through symbol_get (GPL exports only:
+ * kernel/module/main.c __symbol_get), and the two exports are GPL for the same reason (the
+ * module resolves them that way). No module reads as flag clear, the stock flag's initial
+ * value. This kernel is shared with boards whose stock remotectl has not been read, so the flag
+ * test, the log lines and the class run on the two TU machine compatibles only,
+ * rockchip,rk3566-TU15-v1 and rockchip,rk3566-MeeBox210-v1 (TU20 Pro), which boot the same
+ * stock Image (models/tu20pro/boot-profile.toml experimental_boot_sha256 = the TU15's).
+ */
+bool low_power_ctrl_get_state(void);
+void rk_pwm_int_ctrl_enable(void);
+void rk_pwm_int_ctrl_disable(void);
+
+static bool nova_tu_low_power_ctrl(void)
+{
+	return of_machine_is_compatible("rockchip,rk3566-TU15-v1") ||
+	       of_machine_is_compatible("rockchip,rk3566-MeeBox210-v1");
+}
+
+static bool nova_low_power_ctrl_get_state(void)
+{
+	bool (*get_state)(void);
+	bool state;
+
+	if (!nova_tu_low_power_ctrl())
+		return false;
+	get_state = symbol_get(low_power_ctrl_get_state);
+	if (!get_state)
+		return false;
+	state = get_state();
+	symbol_put(low_power_ctrl_get_state);
+	return state;
+}
+
+static struct rkxx_remotectl_drvdata *pddata_g;	/* @ 0xffffff8009f008c0, set at the end of probe */
+static struct class *rk_pwm_class;		/* @ 0xffffff8009f008d8 */
+static struct device *rk_pwm_device;		/* @ 0xffffff8009f008e0 */
+static bool rk_pwm_status;			/* @ 0xffffff8009f008e8 (one byte) */
+
+/* rk_pwm_int_ctrl_enable @ 0xffffff80089948b4: id = pddata_g + 0x30 (remote_pwm_id); the enable
+ * register is written twice, as in rk_pwm_int_ctrl()'s work_mode branch. */
+void rk_pwm_int_ctrl_enable(void)
+{
+	unsigned int id = pddata_g->remote_pwm_id;
+	int val;
+
+	if (id > 3)
+		return;
+	val = readl_relaxed(pddata_g->base + PWM_REG_INT_EN(id));
+	val |= PWM_CH_INT_ENABLE(id);
+	DBG("pwm int enabled, value is 0x%x\n", val);
+	writel_relaxed(val, pddata_g->base + PWM_REG_INT_EN(id));
+	writel_relaxed(val, pddata_g->base + PWM_REG_INT_EN(id));
+}
+EXPORT_SYMBOL_GPL(rk_pwm_int_ctrl_enable);
+
+/* rk_pwm_int_ctrl_disable @ 0xffffff8008994924 */
+void rk_pwm_int_ctrl_disable(void)
+{
+	unsigned int id = pddata_g->remote_pwm_id;
+	int val;
+
+	if (id > 3)
+		return;
+	val = readl_relaxed(pddata_g->base + PWM_REG_INT_EN(id));
+	val &= ~PWM_CH_INT_ENABLE(id);
+	DBG("pwm int disabled, value is 0x%x\n", val);
+	writel_relaxed(val, pddata_g->base + PWM_REG_INT_EN(id));
+}
+EXPORT_SYMBOL_GPL(rk_pwm_int_ctrl_disable);
+
+/* status_show @ 0xffffff8008995ef0 -- rk_pwm_status 0 reads "enable" */
+static ssize_t status_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%s\n", rk_pwm_status ? "disable" : "enable");
+}
+
+/* status_store @ 0xffffff8008995f34 -- the rk_pwm_int_ctrl_enable/disable bodies are inlined
+ * there; the vendor's "invaild" typo is the Image's own string. */
+static ssize_t status_store(struct device *dev, struct device_attribute *attr,
+			    const char *buf, size_t count)
+{
+	if (!strncmp(buf, "enable", 6)) {
+		rk_pwm_status = false;
+		rk_pwm_int_ctrl_enable();
+	} else if (!strncmp(buf, "disable", 7)) {
+		rk_pwm_status = true;
+		rk_pwm_int_ctrl_disable();
+	} else {
+		printk("%s %d: invaild value: %s\n", __func__, 0x272, buf);
+	}
+	return count;
+}
+
+/* dev_attr_status @ 0xffffff8009d44340: "status", mode 0x1b4 */
+static DEVICE_ATTR(status, 0664, status_show, status_store);
+
+/* rk_pwm_class_attrs @ 0xffffff8009d44330 */
+static struct attribute *rk_pwm_class_attrs[] = {
+	&dev_attr_status.attr,
+	NULL,
+};
+/* rk_pwm_class_group @ 0xffffff80093d9f38, rk_pwm_class_groups @ 0xffffff8009d44320 */
+ATTRIBUTE_GROUPS(rk_pwm_class);
+
 struct rk_remote_pwm_data pwm_data_v1 = {
 	.regs = {
 		.version = 0x5c,
@@ -324,9 +439,17 @@ static void rk_pwm_remotectl_do_something(unsigned long  data)
 		    ((~ddata->scandata >> 8) & 0x0ff)) {
 			if (remotectl_keycode_lookup(ddata)) {
 				ddata->press = 1;
-				input_event(ddata->input, EV_KEY,
-					    ddata->keycode, 1);
-				input_sync(ddata->input);
+				/* rk_pwm_remotectl_do_something @ 0xffffff8008995930
+				 * (RMC_GETDATA, +0x288): no press report while the flag is set */
+				if (!nova_low_power_ctrl_get_state()) {
+					input_event(ddata->input, EV_KEY,
+						    ddata->keycode, 1);
+					input_sync(ddata->input);
+					if (nova_tu_low_power_ctrl())
+						printk("%s %s %d send keycode:%02x  1\n",
+						       "nova_low_power_ctrl", __func__,
+						       0xfd, ddata->keycode);
+				}
 				ddata->state = RMC_SEQUENCE;
 			} else {
 				ddata->state = RMC_PRELOAD;
@@ -355,8 +478,16 @@ static void rk_pwm_remotectl_do_something(unsigned long  data)
 				  + msecs_to_jiffies(130));
 		} else {
 			DBG("S4\n");
-			input_event(ddata->input, EV_KEY,
-				    ddata->keycode, 0);
+			/* rk_pwm_remotectl_do_something (RMC_SEQUENCE, +0x248 / +0x2e4): the release
+			 * is dropped while the flag is set, the sync is not */
+			if (!nova_low_power_ctrl_get_state()) {
+				input_event(ddata->input, EV_KEY,
+					    ddata->keycode, 0);
+				if (nova_tu_low_power_ctrl())
+					printk("%s %s %d send keycode:%02x  0\n",
+					       "nova_low_power_ctrl", __func__,
+					       0x120, ddata->keycode);
+			}
 			input_sync(ddata->input);
 			ddata->state = RMC_PRELOAD;
 			ddata->press = 0;
@@ -375,8 +506,15 @@ static void rk_pwm_remotectl_timer(struct timer_list *t)
 	if (ddata->press != ddata->pre_press) {
 		ddata->pre_press = 0;
 		ddata->press = 0;
-		input_event(ddata->input, EV_KEY, ddata->keycode, 0);
-		input_sync(ddata->input);
+		/* rk_pwm_remotectl_timer @ 0xffffff8008995ca8 (+0x20) */
+		if (!nova_low_power_ctrl_get_state()) {
+			input_event(ddata->input, EV_KEY, ddata->keycode, 0);
+			input_sync(ddata->input);
+			if (nova_tu_low_power_ctrl())
+				printk("%s %s %d send keycode:%02x  0\n",
+				       "nova_low_power_ctrl", __func__, 0x138,
+				       ddata->keycode);
+		}
 	}
 	ddata->state = RMC_PRELOAD;
 }
@@ -848,6 +986,10 @@ static inline void rk_pwm_wakeup(struct input_dev *input)
 {
 	input_event(input, EV_KEY, KEY_POWER, 1);
 	input_event(input, EV_KEY, KEY_POWER, 0);
+	/* inlined into remotectl_resume @ 0xffffff800899620c: the log line sits between the
+	 * release and the sync */
+	if (nova_tu_low_power_ctrl())
+		printk("%s %s %d send KEY_POWER\n", "nova_low_power_ctrl", __func__, 0x260);
 	input_sync(input);
 }
 
@@ -989,6 +1131,24 @@ static int rk_pwm_probe(struct platform_device *pdev)
 	timer_setup(&ddata->timer, rk_pwm_remotectl_timer, 0);
 	wake_lock_init(&ddata->remotectl_wake_lock,
 		       WAKE_LOCK_SUSPEND, "rockchip_pwm_remote");
+	if (nova_tu_low_power_ctrl()) {
+		/* rk_pwm_probe @ 0xffffff8008994990, after the wakeup source (+0x7d0..+0x804):
+		 * a class_create error or a NULL device_create unwinds like the IRQ error below,
+		 * returning what input_register_device returned */
+		rk_pwm_class = class_create("rk_pwm");
+		if (IS_ERR(rk_pwm_class)) {
+			printk("%s %d: class_create failed!\n", __func__, 0x315);
+			goto error_irq;
+		}
+		rk_pwm_class->dev_groups = rk_pwm_class_groups;		/* class + 0x18 */
+		rk_pwm_device = device_create(rk_pwm_class, &pdev->dev, 0, NULL,
+					      "rk_pwm_status");
+		if (!rk_pwm_device) {
+			printk("%s %d: device_create failed!\n", __func__, 0x31d);
+			class_destroy(rk_pwm_class);
+			goto error_irq;
+		}
+	}
 	cpumask_clear(&cpumask);
 	cpumask_set_cpu(cpu_id, &cpumask);
 	irq_set_affinity_hint(irq, &cpumask);
@@ -996,6 +1156,10 @@ static int rk_pwm_probe(struct platform_device *pdev)
 			       irq_flags, "pwm_rc", ddata);
 	if (ret) {
 		dev_err(&pdev->dev, "cannot claim IRQ %d\n", irq);
+		if (nova_tu_low_power_ctrl()) {
+			device_destroy(rk_pwm_class, 0);
+			class_destroy(rk_pwm_class);
+		}
 		goto error_irq;
 	}
 	pwm_freq = pwm_freq / 64;
@@ -1016,6 +1180,7 @@ static int rk_pwm_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "Support ATF Wakeup\n");
 	DBG("rk pwm remotectl init end!\n");
 end:
+	pddata_g = ddata;	/* rk_pwm_probe +0xb04, reached by both wakeup paths */
 	return 0;
 error_irq:
 	wake_lock_destroy(&ddata->remotectl_wake_lock);
@@ -1024,6 +1189,11 @@ error_irq:
 
 static void rk_pwm_remove(struct platform_device *pdev)
 {
+	/* rk_pwm_remove @ 0xffffff8008996108 */
+	if (nova_tu_low_power_ctrl()) {
+		device_destroy(rk_pwm_class, 0);
+		class_destroy(rk_pwm_class);
+	}
 }
 
 static int remotectl_suspend(struct device *dev)

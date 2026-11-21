@@ -5529,11 +5529,11 @@ wl_is_fils_supported(struct net_device *ndev)
 	err = wldev_iovar_getbuf(ndev, "fils", (uint8*)iov_buf, sizeof(bcm_iov_buf_t),
 		iov_buf, WLC_IOCTL_SMLEN, NULL);
 	if (err == BCME_UNSUPPORTED || err != BCME_OK) {
-		WL_ERR(("FILS NOT supported, err %d\n", err));
+		WL_DBG(("FILS NOT supported, err %d\n", err));
 		return false;
 	}
 
-	WL_ERR(("FILS supported\n"));
+	WL_DBG(("FILS supported\n"));
 	return true;
 }
 
@@ -9138,7 +9138,7 @@ wl_cfg80211_dump_station(struct wiphy *wiphy, struct net_device *ndev,
 		err = wldev_ioctl_get(ndev, WLC_GET_ASSOCLIST,
 			assoc_maclist, sizeof(cfg->assoclist));
 		if (err < 0) {
-			WL_ERR(("WLC_GET_ASSOCLIST error %d\n", err));
+			WL_DBG(("WLC_GET_ASSOCLIST error %d\n", err));
 			cfg->assoclist.count = 0;
 			return -EOPNOTSUPP;
 		}
@@ -12564,9 +12564,9 @@ WL_CFG80211_REG_NOTIFIER()
 		*/
 	}
 
-	WL_ERR(("Set country code %c%c from %s\n",
+	WL_MSG(bcmcfg_to_prmry_ndev(cfg)->name, "Set country code %c%c from %s\n",
 		request->alpha2[0], request->alpha2[1],
-		((request->initiator == NL80211_REGDOM_SET_BY_COUNTRY_IE) ? " 11d AP" : "User")));
+		((request->initiator == NL80211_REGDOM_SET_BY_COUNTRY_IE) ? " 11d AP" : "User"));
 	ret = wl_cfg80211_set_country_code(bcmcfg_to_prmry_ndev(cfg), request->alpha2, false,
 			(request->initiator == NL80211_REGDOM_SET_BY_USER ? true : false),
 			revinfo);
@@ -19859,7 +19859,7 @@ static s32 __wl_update_wiphybands(struct bcm_cfg80211 *cfg, bool notify)
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)) || defined(CUSTOMER_HW5)
 	err = wldev_iovar_getint(dev, "vhtmode", &vhtmode);
-	if (unlikely(err)) {
+	if (unlikely(err) && err != BCME_UNSUPPORTED) {
 		WL_ERR(("error reading vhtmode (%d)\n", err));
 	}
 
@@ -21281,7 +21281,7 @@ s32 wl_cfg80211_up(struct net_device *net)
 		cfg->rcc_enabled = true;
 		WL_MSG(net->name, "Roam channel cache enabled\n");
 	} else {
-		WL_ERR(("Failed to enable RCC.\n"));
+		WL_MSG(net->name, "Roam channel cache not supported by the firmware\n");
 	}
 #endif /* ROAM_CHANNEL_CACHE */
 #ifdef WL_USE_RANDOMIZED_SCAN
@@ -24585,7 +24585,16 @@ uint8 wl_cfg80211_get_bus_state(struct bcm_cfg80211 *cfg)
 	dhd_pub_t *dhd = (dhd_pub_t *)(cfg->pub);
 	WL_INFORM(("dhd->hang_was_sent = %d and busstate = %d\n",
 			dhd->hang_was_sent, dhd->busstate));
-	return ((dhd->busstate == DHD_BUS_DOWN) || dhd->hang_was_sent);
+	/* The states in which dhd_wl_ioctl() refuses every ioctl with -ENODEV
+	 * (DHD_BUS_CHECK_DOWN_OR_DOWN_IN_PROGRESS): DOWN, DOWN_IN_PROGRESS and REMOVE.
+	 * dhdsdio_advertise_bus_remove() puts the bus in REMOVE before dhd_detach()
+	 * unregisters the netdevs, and the stop_ap cfg80211 issues from that unregister
+	 * must report success on a bus it cannot reach: otherwise cfg80211 keeps the AP's
+	 * links[].ap state (beacon_interval, chandef) on a wdev that __wl_cfg80211_down()
+	 * then flips to STATION, where the same union bytes read as
+	 * links[].client.current_bss and _cfg80211_unregister_wdev() dereferences them.
+	 */
+	return (DHD_BUS_CHECK_DOWN_OR_DOWN_IN_PROGRESS(dhd) || dhd->hang_was_sent);
 }
 
 #ifdef WL_WPS_SYNC

@@ -408,9 +408,11 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 
 	np = of_get_child_by_name(pdev->dev.parent->of_node, "rtc");
 	if (np && !of_device_is_available(np)) {
+		of_node_put(np);
 		dev_info(&pdev->dev, "device is disabled\n");
-		return -EINVAL;
+		return -ENODEV;
 	}
+	of_node_put(np);
 
 	rk808_rtc = devm_kzalloc(&pdev->dev, sizeof(*rk808_rtc), GFP_KERNEL);
 	if (rk808_rtc == NULL)
@@ -485,6 +487,7 @@ static int rk808_rtc_probe(struct platform_device *pdev)
 
 static const struct platform_device_id rk8xx_rtc_id_table[] = {
 	{ "rk805-rtc", 0 },
+	{ "rk808-rtc", 0 },
 	{ "rk809-rtc", 0 },
 	{ "rk816-rtc", 0 },
 	{ "rk817-rtc", 0 },

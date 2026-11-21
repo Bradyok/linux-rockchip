@@ -8,6 +8,7 @@ stmmac-objs:= stmmac_main.o stmmac_mdio.o	\
 	      stmmac_xdp.o stmmac_est.o \
 	      $(stmmac-y)
 
+stmmac-$(CONFIG_STMMAC_CLT_LED_DEV) += stmmac_clt_led_fb.o
 stmmac-$(CONFIG_STMMAC_FULL) += ring_mode.o \
 				chain_mode.o dwmac1000_core.o dwmac1000_dma.o \
 				dwmac100_core.o dwmac100_dma.o enh_desc.o norm_desc.o \
@@ -16,6 +17,7 @@ stmmac-$(CONFIG_STMMAC_FULL) += ring_mode.o \
 
 stmmac-$(CONFIG_STMMAC_SELFTESTS) += stmmac_selftests.o
 stmmac-$(CONFIG_STMMAC_ETHTOOL) += stmmac_ethtool.o
+stmmac-$(CONFIG_STMMAC_CLT_LED) += stmmac_clt_led.o
 
 # Ordering matters. Generic driver must be last.
 obj-$(CONFIG_STMMAC_PLATFORM)	+= stmmac-platform.o
@@ -51,3 +53,4 @@ obj-$(CONFIG_STMMAC_PCI)	+= stmmac-pci.o
 obj-$(CONFIG_DWMAC_INTEL)	+= dwmac-intel.o
 obj-$(CONFIG_DWMAC_LOONGSON)	+= dwmac-loongson.o
 stmmac-pci-objs:= stmmac_pci.o
+obj-$(CONFIG_CLT_LED) += clt_led.o

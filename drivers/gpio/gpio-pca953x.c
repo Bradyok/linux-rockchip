@@ -20,6 +20,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -569,15 +570,46 @@ static int pca953x_gpio_get_value(struct gpio_chip *gc, unsigned off)
 	struct pca953x_chip *chip = gpiochip_get_data(gc);
 	u8 inreg = chip->recalc_addr(chip, chip->regs->input, off);
 	u8 bit = BIT(off % BANK_SZ);
-	u32 reg_val;
-	int ret;
+	u32 val1 = 0, val2 = 0, val3 = 0;
+	int ret1, ret2, ret3;
+	int retry = 4;
+	int val;
 
-	scoped_guard(mutex, &chip->i2c_lock)
-		ret = regmap_read(chip->regmap, inreg, &reg_val);
-	if (ret < 0)
-		return ret;
+	/*
+	 * NovaStar V-series: the input register is read three times and the line
+	 * value is accepted only when all three agree, for up to four passes; after
+	 * the fourth disagreeing pass the third read is returned and the three
+	 * values are logged (V8 V1.4.0 4.19.193 kernel, pca953x_gpio_get_value
+	 * @ 0xffffff8008514598, format string @ 0xffffff8009113a59).
+	 */
+	scoped_guard(mutex, &chip->i2c_lock) {
+		do {
+			ret1 = regmap_read(chip->regmap, inreg, &val1);
+			ret2 = regmap_read(chip->regmap, inreg, &val2);
+			ret3 = regmap_read(chip->regmap, inreg, &val3);
+			val1 = !!(val1 & bit);
+			val2 = !!(val2 & bit);
+			val3 = !!(val3 & bit);
+			if (val1 == val2 && val1 == val3)
+				break;
+		} while (--retry);
 
-	return !!(reg_val & bit);
+		if (retry) {
+			val = val1;
+		} else {
+			printk("%s retry >= 4 val1: 0x%x, val2: 0x%x, val3: 0x%x\n ",
+			       __func__, val1, val2, val3);
+			val = val3;
+		}
+	}
+	if (ret1 < 0)
+		return ret1;
+	if (ret2 < 0)
+		return ret2;
+	if (ret3 < 0)
+		return ret3;
+
+	return val;
 }
 
 static void pca953x_gpio_set_value(struct gpio_chip *gc, unsigned off, int val)
@@ -1113,10 +1145,26 @@ static int pca953x_probe(struct i2c_client *client)
 	int irq_base;
 	int ret;
 	const struct regmap_config *regmap_config;
+	u32 gpiostart = 0;
 
 	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (chip == NULL)
 		return -ENOMEM;
+
+	/*
+	 * NovaStar V-series: a DT `gpiostart` u32 fixes the chip's global GPIO
+	 * base (400/416/433/449/465/481 on the V-series expanders), which the
+	 * stock straps and keypad tables are numbered against. Without it the
+	 * base stays -1, i.e. dynamic. V8 V1.4.0 4.19.193 kernel, pca953x_probe
+	 * @ 0xffffff8008514894 (strings @ 0xffffff8009113a8c/a96/abd).
+	 */
+	ret = of_property_read_u32(dev->of_node, "gpiostart", &gpiostart);
+	if (ret < 0) {
+		printk("gpiostart of_property_read_u32 error \n");
+		gpiostart = -1;
+	} else {
+		printk("gpiostart:[%d]\n", gpiostart);
+	}
 
 	pdata = dev_get_platdata(dev);
 	if (pdata) {
@@ -1125,7 +1173,7 @@ static int pca953x_probe(struct i2c_client *client)
 	} else {
 		struct gpio_desc *reset_gpio;
 
-		chip->gpio_start = -1;
+		chip->gpio_start = gpiostart;
 		irq_base = 0;
 
 		/*

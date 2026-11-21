@@ -30,6 +30,18 @@ config MTD_SPI_NOR_MISC
 	  Support obtaining flash information through the ioctl interface
 	  of the misc device.
 
+config MTD_SPI_NOR_NOVA_NSERIES
+	bool "NovaStar N-series MTD numbering from the DT mtdindex property"
+	help
+	  The NovaStar N-series (N10/N20/P10/P20) stock kernel's spi-nor and
+	  MTD core changes: the u32 "mtdindex" of a jedec,spi-nor node is the
+	  lowest MTD number that flash may take (the vendor userspace opens
+	  the FPGA configuration flash as /dev/mtd1 by number, whether or not
+	  a flash answers on the other bus), and a spi-nor MTD keeps its SPI
+	  device name ("spi2.0") where the Rockchip BSP would rename it
+	  "sfc_nor". A flash without the property starts from 0, as before.
+	  Say N unless building NovaOS for an N-series unit.
+
 choice
 	prompt "Software write protection at boot"
 	default MTD_SPI_NOR_SWP_DISABLE_ON_VOLATILE

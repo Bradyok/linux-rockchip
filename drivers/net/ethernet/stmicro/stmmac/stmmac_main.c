@@ -35,6 +35,12 @@
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #endif /* CONFIG_DEBUG_FS */
+#ifdef CONFIG_STMMAC_NOVA_LINK_PROC
+#include <linux/of.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>
+#endif
 #include <linux/net_tstamp.h>
 #include <linux/phylink.h>
 #include <linux/udp.h>
@@ -46,6 +52,7 @@
 #include "stmmac.h"
 #include "stmmac_xdp.h"
 #include <linux/reset.h>
+#include <linux/of.h>
 #include <linux/of_mdio.h>
 #include "dwmac1000.h"
 #include "dwxgmac2.h"
@@ -1007,6 +1014,7 @@ static void stmmac_mac_link_down(struct phylink_config *config,
 	struct stmmac_priv *priv = netdev_priv(to_net_dev(config->dev));
 
 	stmmac_mac_set(priv, priv->ioaddr, false);
+	stmmac_clt_led_link_change(priv, false);
 	priv->eee_active = false;
 	priv->tx_lpi_enabled = false;
 	priv->eee_enabled = stmmac_eee_init(priv);
@@ -1113,6 +1121,8 @@ static void stmmac_mac_link_up(struct phylink_config *config,
 
 	if (priv->plat->flags & STMMAC_FLAG_HWTSTAMP_CORRECT_LATENCY)
 		stmmac_hwtstamp_correct_latency(priv, priv);
+
+	stmmac_clt_led_link_change(priv, true);
 }
 
 static const struct phylink_mac_ops stmmac_phylink_mac_ops = {
@@ -1978,6 +1988,9 @@ static void __free_dma_tx_desc_resources(struct stmmac_priv *priv,
 	/* Release the DMA TX socket buffers */
 	dma_free_tx_skbufs(priv, dma_conf, queue);
 
+	if (stmmac_clt_led_free_tx(priv, dma_conf, queue))
+		goto free_bufs;
+
 	if (priv->extend_desc) {
 		size = sizeof(struct dma_extended_desc);
 		addr = tx_q->dma_etx;
@@ -1993,6 +2006,7 @@ static void __free_dma_tx_desc_resources(struct stmmac_priv *priv,
 
 	dma_free_coherent(priv->device, size, addr, tx_q->dma_tx_phy);
 
+free_bufs:
 	kfree(tx_q->tx_skbuff_dma);
 	kfree(tx_q->tx_skbuff);
 }
@@ -2131,9 +2145,15 @@ static int __alloc_dma_tx_desc_resources(struct stmmac_priv *priv,
 	struct stmmac_tx_queue *tx_q = &dma_conf->tx_queue[queue];
 	size_t size;
 	void *addr;
+	int ret;
 
 	tx_q->queue_index = queue;
 	tx_q->priv_data = priv;
+
+	/* the Colorlight LED MAC: ring A + ring B, TX queue 0 on the last 64 of ring A */
+	ret = stmmac_clt_led_alloc_tx(priv, dma_conf, queue);
+	if (ret <= 0)
+		return ret;
 
 	tx_q->tx_skbuff_dma = kcalloc(dma_conf->dma_tx_size,
 				      sizeof(*tx_q->tx_skbuff_dma),
@@ -2628,6 +2648,10 @@ static int stmmac_tx_clean(struct stmmac_priv *priv, int budget, u32 queue,
 	unsigned int entry, xmits = 0, count = 0;
 	u32 tx_packets = 0, tx_errors = 0;
 
+	/* the LED frame engine owns every TX descriptor of this queue */
+	if (stmmac_clt_led_owns_tx(priv, queue))
+		return 0;
+
 	__netif_tx_lock_bh(netdev_get_tx_queue(priv->dev, queue));
 
 	tx_q->xsk_frames_done = 0;
@@ -2930,6 +2954,10 @@ static void stmmac_dma_interrupt(struct stmmac_priv *priv)
 	u32 chan;
 	int status[MAX_T(u32, MTL_MAX_TX_QUEUES, MTL_MAX_RX_QUEUES)];
 
+	/* the Colorlight LED MAC in LED mode: the TX interrupt is the frame clock */
+	if (stmmac_clt_led_dma_interrupt(priv))
+		return;
+
 	/* Make sure we never check beyond our status buffer. */
 	if (WARN_ON_ONCE(channels_to_check > ARRAY_SIZE(status)))
 		channels_to_check = ARRAY_SIZE(status);
@@ -3071,7 +3099,8 @@ static int stmmac_init_dma_engine(struct stmmac_priv *priv)
 		tx_q = &priv->dma_conf.tx_queue[chan];
 
 		stmmac_init_tx_chan(priv, priv->ioaddr, priv->plat->dma_cfg,
-				    tx_q->dma_tx_phy, chan);
+				    stmmac_clt_led_tx_base(priv, chan, tx_q->dma_tx_phy),
+				    chan);
 
 		tx_q->tx_tail_addr = tx_q->dma_tx_phy;
 		stmmac_set_tx_tail_ptr(priv, priv->ioaddr,
@@ -3388,6 +3417,41 @@ static bool stmmac_tso_channel_permitted(struct stmmac_priv *priv,
 	return !(priv->dma_conf.tx_queue[chan].tbs & STMMAC_TBS_AVAIL);
 }
 
+/* NovaStar TU carriers: the stock 4.19 kernel's stmmac_hw_setup adds one to the last byte of
+ * the interface address after the DMA engine is initialised and before the address is copied
+ * into the MAC, on every call -- so on every open (stmmac_open +0x9e8) and every resume
+ * (stmmac_resume +0x1ec), the only two callers in the Image. Stock Image 4.19.219-ab377 (sha256
+ * 6c0deb14...7923d98fbb, the kernel of both TU carriers), stmmac_hw_setup @ 0xffffff80088060b8:
+ *
+ *   +0x170  ldr  x8, [x19, #0x2e8]    dev->dev_addr
+ *   +0x174  ldrb w9, [x8, #5]
+ *   +0x178  add  w9, w9, #1           a byte add: 0xff wraps to 0x00, nothing carries
+ *   +0x17c  strb w9, [x8, #5]
+ *   +0x180  ...                       then stmmac_set_umac_addr(priv, priv->hw, dev->dev_addr, 0)
+ *
+ * It writes the byte in place, not through dev_set_mac_address, so the address stays
+ * NET_ADDR_PERM and no NETDEV_CHANGEADDR is sent. Stock TU20 Pros show exactly that on the
+ * GMAC (fe010000.ethernet, eth1): DT local-mac-address 54:b5:6c:0d:63:77, eth1
+ * 54:b5:6c:0d:63:78, addr_assign_type 0 (2KKA02B12N0A10000072 and ...0073 ...63:7c/...63:7d,
+ * 2026-09-22); a stock TU15 read 54:b5:6c:24:3f:30 against its slot 54:b5:6c:24:3f:25,
+ * 0x30 - 0x25 = 11 calls (25C26A000004906 gsv_20260907/full-daemon-01/storage.txt:35).
+ * dev_addr is const on 6.12, so the byte is changed with eth_hw_addr_set, which likewise
+ * leaves addr_assign_type and the notifier chain alone. This kernel is shared with boards
+ * whose stock stmmac has not been read, so it runs on the two TU carriers' machine
+ * compatibles only. */
+static void nova_tu_hw_setup_dev_addr(struct net_device *dev)
+{
+	u8 addr[ETH_ALEN];
+
+	if (!of_machine_is_compatible("rockchip,rk3566-TU15-v1") &&
+	    !of_machine_is_compatible("rockchip,rk3566-MeeBox210-v1"))
+		return;
+
+	ether_addr_copy(addr, dev->dev_addr);
+	addr[5]++;
+	eth_hw_addr_set(dev, addr);
+}
+
 /**
  * stmmac_hw_setup - setup mac in a usable state.
  *  @dev : pointer to the device structure.
@@ -3421,6 +3485,8 @@ static int stmmac_hw_setup(struct net_device *dev, bool ptp_register)
 			   __func__);
 		return ret;
 	}
+
+	nova_tu_hw_setup_dev_addr(dev);
 
 	/* Copy the MAC addr into the HW  */
 	stmmac_set_umac_addr(priv, priv->hw, dev->dev_addr, 0);
@@ -3975,6 +4041,9 @@ static int __stmmac_open(struct net_device *dev,
 	netif_tx_start_all_queues(priv->dev);
 	stmmac_enable_all_dma_irq(priv);
 
+	/* the Colorlight LED MAC: build and own the frame rings */
+	stmmac_clt_led_start(priv);
+
 	return 0;
 
 irq_error:
@@ -4019,6 +4088,8 @@ static int stmmac_release(struct net_device *dev)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 	u32 chan;
+
+	stmmac_clt_led_stop(priv);
 
 	if (device_may_wakeup(priv->device))
 		phylink_speed_down(priv->phylink, false);
@@ -4552,6 +4623,9 @@ static netdev_tx_t stmmac_xmit(struct sk_buff *skb, struct net_device *dev)
 	bool has_vlan, set_ic;
 	int entry, first_tx;
 	dma_addr_t des;
+
+	if (stmmac_clt_led_xmit_drop(priv, skb))
+		return NETDEV_TX_OK;
 
 	tx_q = &priv->dma_conf.tx_queue[queue];
 	txq_stats = &priv->xstats.txq_stats[queue];
@@ -7272,6 +7346,9 @@ static int stmmac_hw_init(struct stmmac_priv *priv)
 	if (priv->plat->flags & STMMAC_FLAG_HAS_SUN8I)
 		chain_mode = 1;
 	priv->chain_mode = chain_mode;
+	/* the Colorlight LED MAC links its frame rings through des3 */
+	if (stmmac_clt_led_probe(priv))
+		priv->chain_mode = 1;
 
 	/* Initialize HW Interface */
 	ret = stmmac_hwif_init(priv);
@@ -7605,6 +7682,235 @@ static const struct xdp_metadata_ops stmmac_xdp_metadata_ops = {
 	.xmo_rx_timestamp		= stmmac_xdp_rx_timestamp,
 };
 
+#ifdef CONFIG_STMMAC_NOVA_LINK_PROC
+/*
+ * NovaStar V-series /proc/ethernet, transcribed from the stock V12 V1.4.1 kernel Image
+ * (4.19.193, vmlinux-to-elf, base 0xffffff8008080000). The stock libsdk polls
+ * link_status once a second (libhal_bsp operation_get_ethlink @ 0x194420,
+ * internal_ethlink.c: popen("cat /proc/ethernet/link_status") + atoi) and uses bit 0 and
+ * bit 1 as the link of the unit's two Ethernet connectors (libsdk net_state_monitor
+ * @ 0x634dd4, sdk_net_op.cpp).
+ *
+ * The COEX and N-series stock kernels carry the same code. KU20 V1.5.1 Image (4.19.193,
+ * vmlinux-to-elf, base 0xffffff8008080000): stmmac_dvr_probe @ 0xffffff80087d41dc calls
+ * proc_mkdir("ethernet", NULL) @ +0x9fc (0xffffff80087d4bd8) after register_netdev, then
+ * proc_create_data("link_status", 0444) @ 0xffffff80087d4c58 and ("clear_fifo", 0222)
+ * @ 0xffffff80087d4c74; proc_cfg_show @ 0xffffff80087d38d0 reads BMSR bit 2 of switch PHY 1
+ * and PHY 3 through rtl8367c_getAsicPHYReg @ 0xffffff800883c8dc, getAsicPHYOCPReg
+ * @ 0xffffff800883c874, getAsicReg @ 0xffffff8008832664 and smi_read @ 0xffffff8008848260
+ * (mdiobus_read(bus, 29, reg), @ 0xffffff80087d026c); proc_cfg_fifo_write @ 0xffffff80087d3780
+ * is the V12 function (rtl8365mb_clear_fifo @ 0xffffff80087cd9fc). The stock COEX LCDApp shows
+ * the control-port address only when link_status reads (GlobalTool::ethLinkStatus @ 0x1e0f30)
+ * and NeoController reports ControllerPortID 0/1 from it. The KU20 proc_cfg_show also dumps PHY
+ * registers and MIB counters once when the byte @ 0xffffff8009665950 is set by
+ * /proc/debug_8363_control (proc_debug_write @ 0xffffff80087d51d8), which only the stock
+ * boot-log step init_novatask.sh save_dmesg_log writes; that entry and the dump are not built
+ * here, and link_status reads the same either way.
+ *
+ * The stock kernels make the entries on every stmmac. One NovaOS kernel serves boards with and
+ * without the switch, so here they are made only for a GMAC whose MDIO bus node in the board
+ * DT says `nova,switch` (the V-series, N-series and COEX trees; mdio_bus.c redirects address 29
+ * on that same bus only): every other board's kernel is the stock 6.12 one in this respect.
+ *
+ * The rtl8367c_* functions are global symbols of the Realtek switch SDK the vendor links
+ * into its kernel; only the chain these two files use is carried, static, with the
+ * Image's own return codes. Each cites its address.
+ */
+
+/*
+ * The bus rtl8367c_smi_read/rtl8367c_smi_write use. The stock kernel's is a struct copy
+ * (0x660 bytes) of the attaching PHY's bus that phy_attach_direct (@ 0xffffff80087d4510,
+ * +0x22c..+0x238, into the object the pointer at 0xffffff80094c9fa8 names, which
+ * rtl8367c_smi_read loads at +0x3c) takes when phy@9 attaches: the stmmac MDIO bus. 6.12
+ * attaches no PHY on this fixed-link port (phylink), so the stmmac bus itself is used, set
+ * when the entries are made -- and, unlike a copy, its own mdio_lock is the one the PHY
+ * layer takes.
+ */
+static struct mii_bus *rtl8367c_smi_bus;
+
+/*
+ * Serialises the proc handlers' multi-register switch accesses, which the stock handlers do
+ * under ndev->phydev->lock (proc_cfg_show +0x34..+0x44, net_device +0x8e8, phy_device
+ * +0x598). With no PHY attached on 6.12 there is no phydev to take it from.
+ */
+static DEFINE_MUTEX(proc_cfg_lock);
+
+/* the procfs directory, a static of the stock stmmac_main.c (stmmac_dvr_probe +0xa04) */
+static struct proc_dir_entry *proc_cfg_dir;
+
+/* rtl8367c_smi_read @ 0xffffff800885f994 */
+static u32 rtl8367c_smi_read(u32 mAddrs, u32 *rData)
+{
+	if (mAddrs > 0xffff)
+		return 1;
+	if (!rData)
+		return 7;
+	*rData = 0;
+	*rData = mdiobus_read(rtl8367c_smi_bus, 29, mAddrs);
+	return 0;
+}
+
+/* rtl8367c_smi_write @ 0xffffff800885f9fc */
+static u32 rtl8367c_smi_write(u32 mAddrs, u32 rData)
+{
+	if (mAddrs > 0xffff || rData > 0xffff)
+		return 1;
+	mdiobus_write(rtl8367c_smi_bus, 29, mAddrs, rData);
+	return 0;
+}
+
+/* rtl8367c_setAsicReg @ 0xffffff800884a9ec */
+static u32 rtl8367c_setAsicReg(u32 reg, u32 value)
+{
+	return rtl8367c_smi_write(reg, value) ? 0xe : 0;
+}
+
+/* rtl8367c_getAsicReg @ 0xffffff800884aa2c */
+static u32 rtl8367c_getAsicReg(u32 reg, u32 *pValue)
+{
+	u32 regData;
+
+	if (rtl8367c_smi_read(reg, &regData))
+		return 0xe;
+	*pValue = regData;
+	return 0;
+}
+
+/* rtl8367c_setAsicRegBits @ 0xffffff800884a858 */
+static u32 rtl8367c_setAsicRegBits(u32 reg, u32 bits, u32 value)
+{
+	u32 regData, bitsShift;
+
+	if (bits > 0xffff)
+		return 1;
+	for (bitsShift = 0; bitsShift < 16; bitsShift++)
+		if ((1U << bitsShift) & bits)
+			break;
+	if (bitsShift == 16)
+		return 1;
+	value <<= bitsShift;
+	if (value > 0xffff)
+		return 1;
+	if (rtl8367c_smi_read(reg, &regData))
+		return 0xe;
+	regData = ((regData ^ value) & bits) ^ regData;
+	if (rtl8367c_smi_write(reg, regData))
+		return 0xe;
+	return 0;
+}
+
+/* rtl8367c_getAsicPHYOCPReg @ 0xffffff8008853d18 */
+static u32 rtl8367c_getAsicPHYOCPReg(u32 phyNo, u32 ocpAddr, u32 *pRegData)
+{
+	u32 ret, regAddr;
+
+	/* OCP address bits [15:10] into register 0x1d15 bits [11:6] */
+	ret = rtl8367c_setAsicRegBits(0x1d15, 0xfc0, (ocpAddr >> 10) & 0x3f);
+	if (ret)
+		return ret;
+	regAddr = 0x2000 | (phyNo << 5) | (((ocpAddr >> 6) & 0xf) << 8) |
+		  ((ocpAddr >> 1) & 0x1f);
+	return rtl8367c_getAsicReg(regAddr, pRegData);
+}
+
+/* rtl8367c_getAsicPHYReg @ 0xffffff8008853de0: a PHY's standard register at OCP 0xa400 + 2 * reg */
+static u32 rtl8367c_getAsicPHYReg(u32 phyNo, u32 phyAddr, u32 *pRegData)
+{
+	if (phyAddr > 0x1f)
+		return 0xe0001;
+	return rtl8367c_getAsicPHYOCPReg(phyNo, (0x5200 + phyAddr) << 1, pRegData);
+}
+
+/* rtl8365mb_clear_fifo @ 0xffffff80087d2aec */
+static int rtl8365mb_clear_fifo(void)
+{
+	return rtl8367c_setAsicReg(0x1322, 2) ? -1 : 0;
+}
+
+/*
+ * proc_cfg_show @ 0xffffff80087d8a60 -- /proc/ethernet/link_status. Register 1 (BMSR) of
+ * switch PHY 1 and PHY 3; bit 2 is link, reported as bit 0 and bit 1 of one hex number.
+ * One regData for both reads, set to 0 once (+0x30), as the stock function.
+ */
+static int proc_cfg_show(struct seq_file *seq, void *v)
+{
+	u32 regData = 0;
+	u32 link;
+
+	mutex_lock(&proc_cfg_lock);
+	rtl8367c_getAsicPHYReg(1, 1, &regData);
+	link = (regData >> 2) & 1;
+	rtl8367c_getAsicPHYReg(3, 1, &regData);
+	if (regData & 0x4)
+		link |= 0x2;
+	mutex_unlock(&proc_cfg_lock);
+	seq_printf(seq, "%x\n", link);
+	return 0;
+}
+
+/* proc_cfg_open @ 0xffffff80087d8854 */
+static int proc_cfg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_cfg_show, pde_data(inode));
+}
+
+/* proc_cfg_fifo_show @ 0xffffff80087d77ac */
+static int proc_cfg_fifo_show(struct seq_file *seq, void *v)
+{
+	return 0;
+}
+
+/* proc_cfg_fifo_open @ 0xffffff80087d8810 */
+static int proc_cfg_fifo_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_cfg_fifo_show, pde_data(inode));
+}
+
+/*
+ * proc_cfg_fifo_write @ 0xffffff80087d8910 -- /proc/ethernet/clear_fifo: exactly two bytes
+ * ("1\n"), a non-zero low byte runs rtl8365mb_clear_fifo, and the write returns 2. The
+ * stock buffer (sp+0x30, 8 bytes) is not cleared before the 2-byte copy; it is here, so
+ * simple_strtol never reads past the two bytes copied.
+ */
+static ssize_t proc_cfg_fifo_write(struct file *file, const char __user *buffer,
+				   size_t count, loff_t *ppos)
+{
+	char buf[8] = { 0 };
+	long val;
+
+	if (count != 2) {
+		printk(KERN_ERR "%s:echo 1 > /proc/ethernet/clear_fifo\n", __func__);
+		return -EFAULT;
+	}
+	if (copy_from_user(buf, buffer, 2))
+		return -EFAULT;
+	val = simple_strtol(buf, NULL, 10);
+	mutex_lock(&proc_cfg_lock);
+	if (val & 0xff) {
+		rtl8365mb_clear_fifo();
+		printk(KERN_ERR "%s:clear rtl8363 fifo!\n", __func__);
+	}
+	mutex_unlock(&proc_cfg_lock);
+	return 2;
+}
+
+/* the stock file_operations @ 0xffffff8008edae60 (link_status), @ 0xffffff8008edaf80 (clear_fifo) */
+static const struct proc_ops proc_cfg_ops = {
+	.proc_open	= proc_cfg_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+
+static const struct proc_ops proc_cfg_fifo_ops = {
+	.proc_open	= proc_cfg_fifo_open,
+	.proc_read	= seq_read,
+	.proc_write	= proc_cfg_fifo_write,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#endif /* CONFIG_STMMAC_NOVA_LINK_PROC */
+
 /**
  * stmmac_dvr_probe
  * @device: device pointer
@@ -7904,6 +8210,28 @@ int stmmac_dvr_probe(struct device *device,
 		goto error_netdev_register;
 	}
 
+#ifdef CONFIG_STMMAC_NOVA_LINK_PROC
+	/*
+	 * stmmac_dvr_probe (@ 0xffffff80087d8e24) +0x9dc..+0xaa0 on the stock kernel, between
+	 * register_netdev (+0x990) and the
+	 * debugfs setup: /proc/ethernet (proc_mkdir, parent NULL), link_status 0444 and
+	 * clear_fifo 0222, both with the net_device as data; a failed mkdir is logged and the
+	 * probe goes on. Made only when the MDIO bus the switch is reached through exists (the
+	 * stock bus copy always does) and the board's DT says the switch is on it (`nova,switch`
+	 * on the GMAC's mdio node, the property mdio_bus.c's address-29 access follows too).
+	 */
+	if (priv->mii && of_property_present(priv->mii->dev.of_node, "nova,switch")) {
+		rtl8367c_smi_bus = priv->mii;
+		proc_cfg_dir = proc_mkdir("ethernet", NULL);
+		if (!proc_cfg_dir) {
+			printk(KERN_ERR "create the procfs node(%s) failed.\n", "ethernet");
+		} else {
+			proc_create_data("link_status", 0444, proc_cfg_dir, &proc_cfg_ops, ndev);
+			proc_create_data("clear_fifo", 0222, proc_cfg_dir, &proc_cfg_fifo_ops, ndev);
+		}
+	}
+#endif
+
 #ifdef CONFIG_DEBUG_FS
 	stmmac_init_fs(ndev);
 #endif
@@ -7948,11 +8276,26 @@ void stmmac_dvr_remove(struct device *dev)
 
 	netdev_info(priv->dev, "%s: removing driver", __func__);
 
+	stmmac_clt_led_remove(priv);
+
 	pm_runtime_get_sync(dev);
 
 	stmmac_stop_all_dma(priv);
 	stmmac_mac_set(priv, priv->ioaddr, false);
 	unregister_netdev(ndev);
+
+#ifdef CONFIG_STMMAC_NOVA_LINK_PROC
+	/*
+	 * The stock stmmac_dvr_remove (@ 0xffffff80087d9964) leaves /proc/ethernet behind; it is
+	 * removed here with the bus it reads, so an unbind leaves no entry pointing at a freed
+	 * net_device.
+	 */
+	if (priv->mii && rtl8367c_smi_bus == priv->mii) {
+		proc_remove(proc_cfg_dir);
+		proc_cfg_dir = NULL;
+		rtl8367c_smi_bus = NULL;
+	}
+#endif
 
 #ifdef CONFIG_DEBUG_FS
 	stmmac_exit_fs(ndev);
@@ -8006,6 +8349,7 @@ int stmmac_suspend(struct device *dev)
 
 	/* Stop TX/RX DMA */
 	stmmac_stop_all_dma(priv);
+	stmmac_clt_led_suspend(priv);
 
 	if (priv->plat->serdes_powerdown)
 		priv->plat->serdes_powerdown(ndev, priv->plat->bsp_priv);
@@ -8159,6 +8503,7 @@ int stmmac_resume(struct device *dev)
 
 	stmmac_enable_all_queues(priv);
 	stmmac_enable_all_dma_irq(priv);
+	stmmac_clt_led_start(priv);
 
 	mutex_unlock(&priv->lock);
 	rtnl_unlock();

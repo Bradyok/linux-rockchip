@@ -14801,7 +14801,7 @@ _dhd_module_init(void)
 	int err;
 	int retry = POWERUP_MAX_RETRY;
 
-	printk(KERN_ERR PERCENT_S DHD_LOG_PREFIXS "%s: in %s\n",
+	printk(KERN_INFO PERCENT_S DHD_LOG_PREFIXS "%s: in %s\n",
 		PRINTF_SYSTEM_TIME, __FUNCTION__, dhd_version);
 	if (ANDROID_VERSION > 0)
 		printf("ANDROID_VERSION = %d\n", ANDROID_VERSION);
@@ -15385,6 +15385,25 @@ dhd_os_get_img_fwreq(const struct firmware **fw, char *file_path)
 		ret = BCME_NOTFOUND;
 	} else
 		DHD_ERROR(("%s: %s (%zu bytes) open success\n", __FUNCTION__, file_path, (*fw)->size));
+
+	return ret;
+}
+
+/*
+ * For a file whose absence is a normal configuration: firmware_request_nowarn() is
+ * request_firmware() without the loader's "Direct firmware load ... failed" warning.
+ */
+int
+dhd_os_get_img_fwreq_nowarn(const struct firmware **fw, char *file_path)
+{
+	int ret;
+
+	ret = firmware_request_nowarn(fw, file_path, dhd_bus_to_dev(g_dhd_pub->bus));
+	if (ret < 0) {
+		DHD_INFO(("%s: %s not present: %d\n", __FUNCTION__, file_path, ret));
+		return BCME_NOTFOUND;
+	}
+	DHD_ERROR(("%s: %s (%zu bytes) open success\n", __FUNCTION__, file_path, (*fw)->size));
 
 	return ret;
 }

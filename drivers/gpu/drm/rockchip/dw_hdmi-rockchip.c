@@ -186,6 +186,8 @@ struct rockchip_hdmi {
 	unsigned int hdmi_quant_range;
 	unsigned int phy_bus_width;
 	unsigned int quant_range_val;
+	/* nova,hdmi-full-range (kernel/patches/0006, 0013) */
+	bool nova_full_range;
 	enum rk_if_color_format hdmi_output;
 	struct rockchip_drm_sub_dev sub_dev;
 
@@ -667,6 +669,21 @@ static int rockchip_hdmi_parse_dt(struct rockchip_hdmi *hdmi)
 
 	if (of_property_read_u32(np, "rockchip,sda-falling-delay-ns", &hdmi->sda_falling_delay_ns))
 		hdmi->sda_falling_delay_ns = 0;
+
+	/* nova,hdmi-full-range: this HDMI output feeds a board-internal receiver on the way
+	 * to the LED sender FPGA, not a display (the T40's GSV1011, the V-series' GSV2011), so
+	 * the pixel values must leave the SoC unscaled -- a limited-range CEA mode compresses
+	 * 0-255 into 16-235 and a black frame lights every pixel on the wall. The range is
+	 * the connector's "quant_range" property (default/limit/full), which stock Android
+	 * sets from user space; NovaOS has no such user-space step, so a board DT that sets
+	 * the property defaults it to full here, the counterpart of the mainline kernel's
+	 * dw_hdmi.rgb_limited_range=0.
+	 * Every mode set reads hdmi_quant_range through dw_hdmi_rockchip_get_quant_range(),
+	 * after dw_hdmi_rockchip_encoder_atomic_check() recomputes it, which 0013 keeps full.
+	 */
+	hdmi->nova_full_range = of_property_read_bool(np, "nova,hdmi-full-range");
+	if (hdmi->nova_full_range)
+		hdmi->hdmi_quant_range = HDMI_QUANTIZATION_RANGE_FULL;
 
 	hdmi->hpd_gpiod = devm_gpiod_get_optional(hdmi->dev, "hpd", GPIOD_IN);
 
@@ -1290,6 +1307,20 @@ dw_hdmi_rockchip_encoder_atomic_check(struct drm_encoder *encoder,
 
 			hdmi->hdmi_quant_range = dw_hdmi_get_default_quant_range(&mode);
 		}
+
+		/* nova,hdmi-full-range (read in rockchip_hdmi_parse_dt, kernel/patches/0006):
+		 * this HDMI output feeds a board-internal receiver on the way to the LED
+		 * sender FPGA, not a display, so the pixel values must leave the SoC unscaled
+		 * -- a limited-range CEA mode compresses 0-255 into 16-235 and a black frame
+		 * lights every pixel on the wall. The receiver's EDID never declares a
+		 * selectable range (the V-series connector says so outright, kernel/patches/
+		 * 0023), so the path above lands on the CEA default (limited) and ignores the
+		 * property. On such a board the range is the property's, and its "default"
+		 * means full (dw_hdmi.rgb_limited_range=0 on mainline). */
+		if (hdmi->nova_full_range)
+			hdmi->hdmi_quant_range =
+				hdmi->quant_range_val == HDMI_QUANTIZATION_RANGE_DEFAULT ?
+				HDMI_QUANTIZATION_RANGE_FULL : hdmi->quant_range_val;
 
 		/*
 		 * VOP can guarantee RGB full range output, while the HDMI controller
@@ -2074,7 +2105,12 @@ static int dw_hdmi_encoder_late_register(struct drm_encoder *encoder)
 	 * HDMI debugfs directory (/sys/kernel/debug/dri/0/hdmiX/) to the
 	 * PHY driver via phy->debugfs.
 	 */
-	if (!hdmi->phy->debugfs)
+	/*
+	 * The PHY is optional (devm_phy_optional_get above): a board whose HDMI TX uses the
+	 * PHY inside the dw-hdmi core, as the RK3566 does, has no phys property and leaves
+	 * this NULL. Every other user in this file checks it first.
+	 */
+	if (hdmi->phy && !hdmi->phy->debugfs)
 		hdmi->phy->debugfs = dw_hdmi_register_debugfs(hdmi->hdmi);
 	dw_hdmi_phy_init(hdmi->hdmi);
 

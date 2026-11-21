@@ -25,12 +25,35 @@ config STMMAC_SELFTESTS
 	  feature if you are facing problems with your HW and submit the test
 	  results to the netdev Mailing List.
 
+config STMMAC_CLT_LED
+	bool "Colorlight C3 Pro LED sender mode"
+	depends on STMMAC_FULL
+	default n
+	help
+	  The Colorlight C3 Pro has no sender FPGA: its stock kernel drives the
+	  receiver cards from the gigabit GMAC itself, with two chained TX
+	  descriptor rings that send straight out of two frame buffers and the
+	  TX interrupt as the frame clock. This adds that mode to the MAC whose
+	  devicetree node has "colorlight,led-output"; every other MAC is
+	  unchanged. The packets are built by the clt_led module (CLT_LED).
+
+	  If unsure, say N.
+
 config STMMAC_UIO
 	tristate "STMMAC_UIO ethernet controller"
 	default n
 	select UIO
 	help
 	  Say M here if you want to use the stmmac_uio.ko for DPDK.
+
+config STMMAC_CLT_LED_DEV
+	bool "/dev/clt_led: the frame source of the Colorlight LED mode"
+	depends on STMMAC_CLT_LED
+	default STMMAC_CLT_LED
+	help
+	  The two frame buffers of the Colorlight C3 Pro LED mode, its frame
+	  clock and its layout, for a player: mmap, read/poll and an ioctl on
+	  /dev/clt_led (include/uapi/linux/clt_led.h).
 
 config STMMAC_ETHTOOL
 	bool "Ethtool feature for STMMAC"
@@ -44,6 +67,19 @@ config STMMAC_FULL
 	help
 	  This selects the full function, default is Y, full-featured version
 	  includes 4.10 and other versions, if it is N, only 4.10 core working.
+
+config STMMAC_NOVA_LINK_PROC
+	bool "NovaStar /proc/ethernet (RTL8363 switch port link)"
+	depends on PROC_FS && PHYLIB && OF
+	select NOVA_MDIO_SWITCH
+	help
+	  The NovaStar V-series, N-series and COEX stock kernels'
+	  /proc/ethernet/link_status and /proc/ethernet/clear_fifo, which the
+	  stock applications read for the link of the two Ethernet ports
+	  behind the on-board RTL8363 switch, and the MDIO address 29 indirect
+	  register access they go through (NOVA_MDIO_SWITCH). Both are made
+	  only for a GMAC whose MDIO bus node in the device tree carries the
+	  "nova,switch" property; on any other board the driver is unchanged.
 
 config STMMAC_PLATFORM
 	tristate "STMMAC Platform bus support"
@@ -340,4 +376,18 @@ config STMMAC_PCI
 	  If you have a controller with this interface, say Y or M here.
 
 	  If unsure, say N.
+
+config CLT_LED
+	tristate "Colorlight C3 Pro receiver-card packet engine (clt_led)"
+	depends on STMMAC_ETH && STMMAC_CLT_LED
+	default n
+	help
+	  The packet builder of the Colorlight C3 Pro LED mode (the stock
+	  lp855x_bl.ko): the frame/brightness, row-segment and receiver-detect
+	  packets, the frame flip, and /sys/sysfs_colorlight_led/. The GMAC
+	  runs its LED mode only while this module is loaded; without it the
+	  port is an ordinary Ethernet port.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called clt_led.
 endif

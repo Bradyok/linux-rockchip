@@ -4,6 +4,8 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -156,9 +158,78 @@ static void vkms_atomic_crtc_reset(struct drm_crtc *crtc)
 		INIT_WORK(&vkms_state->composer_work, vkms_composer_worker);
 }
 
+/*
+ * NovaStar V-series: drm_atomic_helper_page_flip_zmh @ 0xffffff800862b460, the vendor's
+ * .page_flip for the vkms CRTC (its crtc_funcs @ 0xffffff8008e8e408 +0x38). Before the
+ * flip is committed, the framebuffer being flipped to is copied into /dev/vkms_misc:
+ * drm_gem_fb_get_obj(fb, 0) (+0x40), the object's scatter table from the driver's
+ * gem_prime_get_sg_table (+0x4c..+0x58), vkms_write_buf(&output->vkms_misc, sgt,
+ * obj->size) (+0x6c..+0x78), then sg_free_table + kfree of that table (+0x80..+0x88).
+ * A failure is only logged; the flip itself always goes on (+0xa0).
+ *
+ * 6.12 GEM: vkms objects are shmem objects, and the hook the vendor called is
+ * obj->funcs->get_sg_table (drm_gem_shmem_object_get_sg_table), which builds a table over
+ * the object's pages and needs them pinned -- the vendor's vkms_dumb_create
+ * (@ 0xffffff800862b7d0) got the pages at creation for the same reason. The pages are
+ * pinned for the copy and unpinned after it. An imported object (a PRIME buffer from the
+ * GPU) keeps the table its import produced; the vendor's own import
+ * (vkms_prime_import_sg_table @ 0xffffff800862bad4) turned that table into the page array
+ * its get_sg_table rebuilt from, so the copy reads the same pages, and that table stays
+ * owned by the object.
+ */
+static int drm_atomic_helper_page_flip_zmh(struct drm_crtc *crtc,
+					   struct drm_framebuffer *fb,
+					   struct drm_pending_vblank_event *event,
+					   uint32_t flags,
+					   struct drm_modeset_acquire_ctx *ctx)
+{
+	struct drm_gem_shmem_object *shmem;
+	struct drm_gem_object *obj;
+	struct sg_table *sgt;
+
+	if (!crtc)
+		goto flip;
+
+	obj = drm_gem_fb_get_obj(fb, 0);
+	if (!obj) {
+		DRM_ERROR("[zmh]%s, vkms get current gem_obj failed", __func__);
+		goto flip;
+	}
+	shmem = to_drm_gem_shmem_obj(obj);
+
+	if (obj->import_attach) {
+		sgt = shmem->sgt;
+		if (!sgt) {
+			DRM_ERROR("[zmh]%s, gem_prime_get_sg_table failed.", __func__);
+			goto flip;
+		}
+		vkms_write_buf(&drm_crtc_to_vkms_output(crtc)->vkms_misc, sgt, obj->size);
+		goto flip;
+	}
+
+	if (drm_gem_shmem_pin(shmem)) {
+		DRM_ERROR("[zmh]%s, gem_prime_get_sg_table failed.", __func__);
+		goto flip;
+	}
+	sgt = obj->funcs->get_sg_table(obj);
+	if (IS_ERR_OR_NULL(sgt)) {
+		DRM_ERROR("[zmh]%s, gem_prime_get_sg_table failed.", __func__);
+		drm_gem_shmem_unpin(shmem);
+		goto flip;
+	}
+	vkms_write_buf(&drm_crtc_to_vkms_output(crtc)->vkms_misc, sgt, obj->size);
+	sg_free_table(sgt);
+	kfree(sgt);
+	drm_gem_shmem_unpin(shmem);
+
+flip:
+	return drm_atomic_helper_page_flip(crtc, fb, event, flags, ctx);
+}
+
 static const struct drm_crtc_funcs vkms_crtc_funcs = {
 	.set_config             = drm_atomic_helper_set_config,
-	.page_flip              = drm_atomic_helper_page_flip,
+	/* drm_atomic_helper_page_flip_zmh: vendor crtc_funcs @ 0xffffff8008e8e408 +0x38 */
+	.page_flip              = drm_atomic_helper_page_flip_zmh,
 	.reset                  = vkms_atomic_crtc_reset,
 	.atomic_duplicate_state = vkms_atomic_crtc_duplicate_state,
 	.atomic_destroy_state   = vkms_atomic_crtc_destroy_state,

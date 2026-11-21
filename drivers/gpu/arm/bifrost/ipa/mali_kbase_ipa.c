@@ -446,8 +446,12 @@ static u32 get_static_power_locked(struct kbase_device *kbdev, struct kbase_ipa_
 
 	lockdep_assert_held(&model->kbdev->ipa.lock);
 
-	if (!model->ops->get_static_coeff)
+	if (!model->ops->get_static_coeff && !model->ops->get_static_power)
 		model = kbdev->ipa.fallback_model;
+
+	if (model->ops->get_static_power &&
+	    !model->ops->get_static_power(model, (u32)voltage, &power))
+		return power;
 
 	if (model->ops->get_static_coeff) {
 		err = model->ops->get_static_coeff(model, &power_coeff);

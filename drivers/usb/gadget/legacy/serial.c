@@ -239,6 +239,15 @@ static int gs_bind(struct usb_composite_dev *cdev)
 	usb_composite_overwrite_options(cdev, &coverwrite);
 	INFO(cdev, "%s\n", GS_VERSION_NAME);
 
+#ifdef CONFIG_U_SERIAL_CONSOLE
+	/* NovaOS bring-up: make the first port the kernel console (console=ttyGS0) as soon as
+	 * the gadget binds, so a board with no UART attached shows its boot log on the USB
+	 * link. Upstream only enables it from the configfs `console` attribute, i.e. from
+	 * user space, which a kernel that never reaches user space cannot do.
+	 */
+	gserial_set_console(0, "1", 1);
+#endif
+
 	return 0;
 fail1:
 	kfree(otg_desc[0]);

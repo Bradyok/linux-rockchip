@@ -87,10 +87,71 @@ static int fbtft_request_one_gpio(struct fbtft_par *par,
 	return 0;
 }
 
+/*
+ * Legacy platform_data path: resolve pdata->gpios[] (pinname -> global GPIO
+ * number) for fbtft_device-registered displays that have no DT/fwnode. Restores
+ * the pre-gpiod mechanism the staging core dropped, mapped onto gpio_desc. The
+ * DT path (fbtft_request_one_gpio) yields nothing for such a device, so when
+ * pdata->gpios is present this is the only source of the panel's GPIOs.
+ */
+static int fbtft_request_gpios_pdata(struct fbtft_par *par)
+{
+	const struct fbtft_gpio_lookup *gl;
+	struct gpio_desc *d;
+
+	if (!par->pdata || !par->pdata->gpios)
+		return 0;
+
+	for (gl = par->pdata->gpios; gl->name[0]; gl++) {
+		d = gpio_to_desc(gl->gpio);
+		if (!d) {
+			dev_err(par->info->device,
+				"failed to get gpio %d for '%s'\n",
+				gl->gpio, gl->name);
+			return -EINVAL;
+		}
+		gpiod_direction_output(d, 0);
+
+		if (!strcasecmp(gl->name, "reset"))
+			par->gpio.reset = d;
+		else if (!strcasecmp(gl->name, "dc"))
+			par->gpio.dc = d;
+		else if (!strcasecmp(gl->name, "rd"))
+			par->gpio.rd = d;
+		else if (!strcasecmp(gl->name, "wr"))
+			par->gpio.wr = d;
+		else if (!strcasecmp(gl->name, "cs"))
+			par->gpio.cs = d;
+		else if (!strcasecmp(gl->name, "latch"))
+			par->gpio.latch = d;
+		else if (!strncasecmp(gl->name, "led", 3))
+			par->gpio.led[0] = d;
+		else if (!strncasecmp(gl->name, "db", 2)) {
+			int idx = (gl->name[2] - '0') * 10 + (gl->name[3] - '0');
+
+			if (idx >= 0 && idx < 16)
+				par->gpio.db[idx] = d;
+		} else if (par->pdata->display.fbtftops.request_gpios_match) {
+			/* driver-specific names (cs0/cs1/rw/…) */
+			struct fbtft_gpio fg;
+
+			strscpy(fg.name, gl->name, sizeof(fg.name));
+			fg.gpio = d;
+			par->pdata->display.fbtftops.request_gpios_match(par, &fg);
+		}
+	}
+
+	return 0;
+}
+
 static int fbtft_request_gpios(struct fbtft_par *par)
 {
 	int i;
 	int ret;
+
+	/* platform_data displays (fbtft_device shim) carry their own pin table */
+	if (par->pdata && par->pdata->gpios)
+		return fbtft_request_gpios_pdata(par);
 
 	ret = fbtft_request_one_gpio(par, "reset", 0, &par->gpio.reset);
 	if (ret)
@@ -686,6 +747,16 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	par->fbtftops.reset = fbtft_reset;
 	par->fbtftops.mkdirty = fbtft_mkdirty;
 	par->fbtftops.update_display = fbtft_update_display;
+	/*
+	 * The pdata path (fbtft_device) has no fbtft_properties_read(), which is
+	 * where 6.x sets request_gpios for a DT device, so the default comes back
+	 * here as 4.19 had it (drivers/staging/fbtft/fbtft-core.c:866 in v4.19,
+	 * right after update_display). Without it fbtft_register_framebuffer() calls
+	 * NULL: the V12 front panel's first probe on 6.12 oopsed at
+	 * fbtft_register_framebuffer+0x7c.
+	 * A driver's own request_gpios still wins through the merge below.
+	 */
+	par->fbtftops.request_gpios = fbtft_request_gpios;
 	if (display->backlight)
 		par->fbtftops.register_backlight = fbtft_register_backlight;
 

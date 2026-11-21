@@ -24,6 +24,7 @@
 #include <net/page_pool/types.h>
 #include <net/xdp.h>
 #include <uapi/linux/bpf.h>
+#include "stmmac_clt_led.h"
 
 struct stmmac_resources {
 	void __iomem *addr;
@@ -244,6 +245,10 @@ struct stmmac_dma_conf {
 	/* TX Queue */
 	struct stmmac_tx_queue tx_queue[MTL_MAX_TX_QUEUES];
 	unsigned int dma_tx_size;
+#if IS_ENABLED(CONFIG_STMMAC_CLT_LED)
+	/* Colorlight LED mode: TX queue 0 is the last 64 descriptors of clt_led.ring_a */
+	struct stmmac_clt_led_rings clt_led;
+#endif
 };
 
 #define EST_GCL         1024
@@ -386,6 +391,10 @@ struct stmmac_priv {
 	/* XDP BPF Program */
 	unsigned long *af_xdp_zc_qps;
 	struct bpf_prog *xdp_prog;
+#if IS_ENABLED(CONFIG_STMMAC_CLT_LED)
+	/* Colorlight LED mode (stmmac_clt_led.c); NULL on every other MAC */
+	struct stmmac_clt_led *clt_led;
+#endif
 };
 
 enum stmmac_state {

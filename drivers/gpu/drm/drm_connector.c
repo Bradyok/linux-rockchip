@@ -3195,7 +3195,23 @@ int drm_mode_getconnector(struct drm_device *dev, void *data,
 
 	mutex_lock(&dev->mode_config.mutex);
 	if (out_resp->count_modes == 0) {
-		if (is_current_master)
+		/*
+		 * NovaStar V-series: the stock 4.19.193 kernel's drm_mode_getconnector
+		 * (@ 0xffffff8008614fd0) has no DRM-master test here -- count_modes == 0
+		 * (+0x10c..+0x110) goes straight to connector->funcs->fill_modes(connector,
+		 * mode_config.max_width, max_height) (+0x274..+0x288), for any client. The stock
+		 * OSD depends on it: libsdk hal_vkms_init (libhal_bsp @ 0x14a64c) opens
+		 * /dev/dri/card2 and keeps it, so libsdk is card2's master whenever it opens it
+		 * first, and kvosd (Qt eglfs_kms, kms.conf "device": "/dev/dri/card2") then
+		 * enumerates the vkms connector as a plain client. Nothing else probes that
+		 * connector (vkms has no fbdev client on the stock kernel), so on 6.12 kvosd read
+		 * "No modes available for output Virtual1" and aborted ("Cannot create window: no
+		 * screens available", seen on a V12). Restored
+		 * for the vkms device only; every other driver keeps the
+		 * 6.12 master-only probe.
+		 */
+		if (is_current_master ||
+		    (IS_ENABLED(CONFIG_DRM_VKMS) && strstr(dev->driver->name, "vkms")))
 			connector->funcs->fill_modes(connector,
 						     dev->mode_config.max_width,
 						     dev->mode_config.max_height);

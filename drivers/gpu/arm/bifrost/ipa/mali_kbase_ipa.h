@@ -136,6 +136,19 @@ struct kbase_ipa_model_ops {
 	int (*get_static_coeff)(struct kbase_ipa_model *model, u32 *coeffp);
 
 	/*
+	 * get_static_power() - calculate static power at a voltage (optional)
+	 * @model:		pointer to model
+	 * @voltage:		voltage, in mV
+	 * @powerp:		pointer to return value location, in mW
+	 *
+	 * For a model whose static power does not scale as V^3, so cannot be
+	 * expressed through get_static_coeff(). Tried before get_static_coeff().
+	 *
+	 * Return: 0 on success, or an error code to fall back to get_static_coeff().
+	 */
+	int (*get_static_power)(struct kbase_ipa_model *model, u32 voltage, u32 *powerp);
+
+	/*
 	 * reset_counter_data() - Reset the HW counter data used for calculating
 	 *                        dynamic power coefficient
 	 * @model:		  pointer to model

@@ -60,6 +60,11 @@
 #define RK817_DAC_VOL_MAX 255
 
 struct rk817_codec_priv {
+	struct class *nova_class;
+	struct device *nova_device;
+	struct mutex nova_mute_lock;
+	unsigned long long nova_mute;
+
 	struct snd_soc_component *component;
 	struct regmap *regmap;
 	struct rk808 *rk817;
@@ -1408,11 +1413,134 @@ static int rk817_resume(struct snd_soc_component *component)
 	return 0;
 }
 
+/* T40 vendor 4.19.193-ab479 mute_store @0xffffff8008b5f0e0 and
+ * mute_show @0xffffff8008b5f0b0. These codec writes explain I2C0/0x20
+ * registers 0x38/0x15 in the source-switch capture; they are NOT a video mux.
+ * Kept distinct from ALSA digital_mute: the vendor sysfs path's ordering and
+ * digital-clock reset differ. Publish only when the component is ready. */
+static ssize_t nova_mute_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct rk817_codec_priv *rk817 = dev_get_drvdata(dev);
+	unsigned long long value;
+
+	mutex_lock(&rk817->nova_mute_lock);
+	value = rk817->nova_mute;
+	mutex_unlock(&rk817->nova_mute_lock);
+	return sysfs_emit(buf, "%llu\n", value);
+}
+
+static void nova_mute_gpio(struct gpio_desc *gpio, int value, unsigned int delay)
+{
+	if (gpio) {
+		gpiod_set_value_cansleep(gpio, value);
+		msleep(delay);
+	}
+}
+
+static ssize_t nova_mute_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct rk817_codec_priv *rk817 = dev_get_drvdata(dev);
+	struct snd_soc_component *component = rk817->component;
+	unsigned long long value;
+	int ret;
+
+	ret = kstrtoull(buf, 0, &value);
+	if (ret)
+		return ret;
+	mutex_lock(&rk817->nova_mute_lock);
+	ret = snd_soc_component_update_bits(component, RK817_CODEC_DDAC_MUTE_MIXCTL,
+					   1, value ? 1 : 0);
+	if (ret < 0)
+		goto out;
+	if (value) {
+		ret = snd_soc_component_update_bits(component, RK817_CODEC_DTOP_DIGEN_CLKE, 0xf, 0);
+		if (ret < 0)
+			goto out;
+		ret = snd_soc_component_update_bits(component, RK817_CODEC_DTOP_DIGEN_CLKE, 0xf, 0xf);
+		if (ret < 0)
+			goto out;
+		nova_mute_gpio(rk817->spk_ctl_gpio, 0, rk817->spk_mute_delay);
+		nova_mute_gpio(rk817->hp_ctl_gpio, 0, rk817->hp_mute_delay);
+	} else {
+		switch (rk817->playback_path) {
+		case SPK_PATH:
+		case RING_SPK:
+			nova_mute_gpio(rk817->spk_ctl_gpio, 1, rk817->spk_mute_delay);
+			nova_mute_gpio(rk817->hp_ctl_gpio, 0, rk817->hp_mute_delay);
+			break;
+		case HP_PATH:
+		case HP_NO_MIC:
+		case RING_HP:
+		case RING_HP_NO_MIC:
+			nova_mute_gpio(rk817->spk_ctl_gpio, 0, rk817->spk_mute_delay);
+			nova_mute_gpio(rk817->hp_ctl_gpio, 1, rk817->hp_mute_delay);
+			break;
+		case SPK_HP:
+		case RING_SPK_HP:
+			nova_mute_gpio(rk817->spk_ctl_gpio, 1, rk817->spk_mute_delay);
+			nova_mute_gpio(rk817->hp_ctl_gpio, 1, rk817->hp_mute_delay);
+			break;
+		}
+	}
+	rk817->nova_mute = value;
+	ret = 0;
+out:
+	mutex_unlock(&rk817->nova_mute_lock);
+	return ret < 0 ? ret : count;
+}
+static DEVICE_ATTR(mute, 0644, nova_mute_show, nova_mute_store);
+static struct attribute *nova_codec_attrs[] = { &dev_attr_mute.attr, NULL };
+ATTRIBUTE_GROUPS(nova_codec);
+
+static int nova_codec_sysfs_init(struct rk817_codec_priv *rk817)
+{
+	int ret;
+
+	if (!of_machine_is_compatible("rockchip,rk3566-t40-ddr4-v10-linux"))
+		return 0;
+	mutex_init(&rk817->nova_mute_lock);
+	/* class_create() lost its owning-module argument in 6.4. Before that it is a
+	 * two-arg MACRO (include/linux/device/class.h:273, 6.1.118); from 6.4 on it is
+	 * a one-arg function declaration (same header :230 in 6.6.89, :228 in 6.12.69),
+	 * so `#ifdef class_create` is an exact test for which ABI this tree has. */
+#ifdef class_create
+	rk817->nova_class = class_create(THIS_MODULE, "rk817_codec");
+#else
+	rk817->nova_class = class_create("rk817_codec");
+#endif
+	if (IS_ERR(rk817->nova_class)) {
+		ret = PTR_ERR(rk817->nova_class);
+		rk817->nova_class = NULL;
+		return ret;
+	}
+	rk817->nova_device = device_create_with_groups(rk817->nova_class,
+		rk817->component->dev, 0, rk817, nova_codec_groups, "rk817_codec");
+	if (IS_ERR(rk817->nova_device)) {
+		ret = PTR_ERR(rk817->nova_device);
+		class_destroy(rk817->nova_class);
+		rk817->nova_class = NULL;
+		return ret;
+	}
+	return 0;
+}
+
+static void nova_codec_sysfs_remove(struct rk817_codec_priv *rk817)
+{
+	if (rk817->nova_class) {
+		device_unregister(rk817->nova_device);
+		class_destroy(rk817->nova_class);
+		rk817->nova_class = NULL;
+	}
+}
+
 static int rk817_probe(struct snd_soc_component *component)
 {
 	struct rk817_codec_priv *rk817 = snd_soc_component_get_drvdata(component);
 	int chip_name = 0;
 	int chip_ver = 0;
+	int ret;
 
 	DBG("%s\n", __func__);
 
@@ -1441,7 +1569,14 @@ static int rk817_probe(struct snd_soc_component *component)
 
 	snd_soc_add_component_controls(component, rk817_snd_controls,
 				       ARRAY_SIZE(rk817_snd_controls));
-	return 0;
+	ret = nova_codec_sysfs_init(rk817);
+	if (ret) {
+		rk817_codec_power_down(component, RK817_CODEC_ALL);
+		snd_soc_component_exit_regmap(component);
+		mutex_destroy(&rk817->clk_lock);
+		clk_disable_unprepare(rk817->mclk);
+	}
+	return ret;
 }
 
 /* power down chip */
@@ -1456,6 +1591,7 @@ static void rk817_remove(struct snd_soc_component *component)
 		return;
 	}
 
+	nova_codec_sysfs_remove(rk817);
 	rk817_codec_power_down(component, RK817_CODEC_ALL);
 	snd_soc_component_exit_regmap(component);
 	mutex_destroy(&rk817->clk_lock);

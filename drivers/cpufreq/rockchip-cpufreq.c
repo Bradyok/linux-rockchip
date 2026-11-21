@@ -646,10 +646,9 @@ static int rockchip_cpufreq_early_init(void)
 		}
 		clk = clk_get(dev, NULL);
 		if (IS_ERR(clk)) {
-			dev_err(dev, "failed to get cpu%d clk\n", cpu);
 			ret = PTR_ERR(clk);
-			if (ret == -EPROBE_DEFER)
-				dev_err(dev, "cpu%d clk is not ready\n", cpu);
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "failed to get cpu%d clk\n", cpu);
 			goto error;
 		}
 		clk_put(clk);
@@ -665,10 +664,9 @@ static int rockchip_cpufreq_early_init(void)
 		}
 		reg = regulator_get_optional(dev, reg_name);
 		if (IS_ERR(reg)) {
-			dev_err(dev, "failed to get cpu%d reg\n", cpu);
 			ret = PTR_ERR(reg);
-			if (ret == -EPROBE_DEFER)
-				dev_err(dev, "cpu%d reg is not ready\n", cpu);
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "failed to get cpu%d reg\n", cpu);
 			goto error;
 		}
 		regulator_put(reg);
@@ -1090,10 +1088,8 @@ static int rockchip_cpufreq_probe(struct platform_device *pdev)
 	bool is_opp_shared_cpu_bus = false;
 
 	ret = rockchip_cpufreq_early_init();
-	if (ret) {
-		pr_err("failed to init cpufreq\n");
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "failed to init cpufreq\n");
 
 	list_for_each_entry(cluster, &cluster_info_list, list_head) {
 		cpu = cpumask_first(&cluster->cpus);

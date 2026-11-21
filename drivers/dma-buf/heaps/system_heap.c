@@ -17,12 +17,19 @@
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#ifdef CONFIG_DMABUF_HEAPS_SYSTEM_DMA32
+#include <linux/of.h>
+#endif
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 
 static struct dma_heap *sys_heap;
 static struct dma_heap *sys_uncached_heap;
+#ifdef CONFIG_DMABUF_HEAPS_SYSTEM_DMA32
+static struct dma_heap *sys_dma32_heap;
+static struct dma_heap *sys_uncached_dma32_heap;
+#endif
 
 struct system_heap_buffer {
 	struct dma_heap *heap;
@@ -457,6 +464,41 @@ static struct page *alloc_largest_available(unsigned long size,
 	return NULL;
 }
 
+#ifdef CONFIG_DMABUF_HEAPS_SYSTEM_DMA32
+/*
+ * "system-dma32" / "system-uncached-dma32": the system heap's own buffers, from pages below 4 GiB.
+ * The Rockchip MPP a vendor userland ships (PixelHue N-series V2.0.0 librockchip_mpp.so.1, heap
+ * table @ 0x154650) opens /dev/dma_heap/system-uncached-dma32 for its default buffer type and has
+ * no fallback name; Rockchip's own 5.10/6.1 system heap registered both names (the unbuilt
+ * drivers/dma-buf/heaps/rk_system_heap.c of this tree, :783-822). __GFP_DMA32 is never combined
+ * with __GFP_HIGHMEM (a GFP_ZONE_BAD pair), so the order flags drop it.
+ */
+static bool system_heap_is_dma32(struct dma_heap *heap)
+{
+	return heap == sys_dma32_heap || heap == sys_uncached_dma32_heap;
+}
+
+static struct page *alloc_largest_available_dma32(unsigned long size,
+						  unsigned int max_order)
+{
+	struct page *page;
+	int i;
+
+	for (i = 0; i < NUM_ORDERS; i++) {
+		if (size <  (PAGE_SIZE << orders[i]))
+			continue;
+		if (max_order < orders[i])
+			continue;
+
+		page = alloc_pages((order_flags[i] & ~__GFP_HIGHMEM) | __GFP_DMA32, orders[i]);
+		if (!page)
+			continue;
+		return page;
+	}
+	return NULL;
+}
+#endif
+
 static struct dma_buf *system_heap_do_allocate(struct dma_heap *heap,
 					       unsigned long len,
 					       u32 fd_flags,
@@ -496,7 +538,13 @@ static struct dma_buf *system_heap_do_allocate(struct dma_heap *heap,
 			goto free_buffer;
 		}
 
+#ifdef CONFIG_DMABUF_HEAPS_SYSTEM_DMA32
+		page = system_heap_is_dma32(heap) ?
+		       alloc_largest_available_dma32(size_remaining, max_order) :
+		       alloc_largest_available(size_remaining, max_order);
+#else
 		page = alloc_largest_available(size_remaining, max_order);
+#endif
 		if (!page)
 			goto free_buffer;
 
@@ -590,6 +638,13 @@ static struct dma_heap_ops system_uncached_heap_ops = {
 	.allocate = system_uncached_heap_not_initialized,
 };
 
+#ifdef CONFIG_DMABUF_HEAPS_SYSTEM_DMA32
+static struct dma_heap_ops system_uncached_dma32_heap_ops = {
+	/* swapped once the heap device's 32-bit DMA mask is set */
+	.allocate = system_uncached_heap_not_initialized,
+};
+#endif
+
 static int system_heap_create(void)
 {
 	struct dma_heap_export_info exp_info;
@@ -613,6 +668,40 @@ static int system_heap_create(void)
 	dma_coerce_mask_and_coherent(dma_heap_get_dev(sys_uncached_heap), DMA_BIT_MASK(64));
 	mb(); /* make sure we only set allocate after dma_mask is set */
 	system_uncached_heap_ops.allocate = system_uncached_heap_allocate;
+
+#ifdef CONFIG_DMABUF_HEAPS_SYSTEM_DMA32
+	/*
+	 * One kernel for every NovaStar board: the two
+	 * names exist only on a board whose DT root node has nova,dma-heap-dma32 (the N-series,
+	 * models/nseries/dts/rk3566-nseries-lp4x-v10.dtsi), whose stock MPP needs them. The
+	 * open-source MPP of the T40 player and COEX coex-mvr would pick a dma32 heap when one
+	 * exists, so every other board keeps the two heaps it has today. A property, not a
+	 * machine compatible: the N-series, V-series and COEX trees share the EVB2's.
+	 */
+	if (!of_property_read_bool(of_root, "nova,dma-heap-dma32"))
+		return 0;
+
+	exp_info.name = "system-dma32";
+	exp_info.ops = &system_heap_ops;
+	exp_info.priv = NULL;
+
+	sys_dma32_heap = dma_heap_add(&exp_info);
+	if (IS_ERR(sys_dma32_heap))
+		return PTR_ERR(sys_dma32_heap);
+
+	exp_info.name = "system-uncached-dma32";
+	exp_info.ops = &system_uncached_dma32_heap_ops;
+	exp_info.priv = NULL;
+
+	sys_uncached_dma32_heap = dma_heap_add(&exp_info);
+	if (IS_ERR(sys_uncached_dma32_heap))
+		return PTR_ERR(sys_uncached_dma32_heap);
+
+	/* the mask rk_system_heap.c:822 gives this heap's device */
+	dma_coerce_mask_and_coherent(dma_heap_get_dev(sys_uncached_dma32_heap), DMA_BIT_MASK(32));
+	mb(); /* make sure we only set allocate after dma_mask is set */
+	system_uncached_dma32_heap_ops.allocate = system_uncached_heap_allocate;
+#endif
 
 	return 0;
 }

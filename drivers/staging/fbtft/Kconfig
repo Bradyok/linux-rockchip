@@ -197,3 +197,10 @@ config FB_TFT_UPD161704
 	depends on FB_TFT
 	help
 	  Generic Framebuffer support for uPD161704
+
+config FB_TFT_FBTFT_DEVICE
+	tristate "Module to for adding FBTFT devices"
+	depends on FB_TFT
+	help
+	  Restored fbtft_device registration shim (name=/gpios= module params).
+	  Used by the NovaStar V-series front-panel ST7789V LCD (nova-os).

@@ -1041,7 +1041,12 @@ int gpiochip_add_data_with_key(struct gpio_chip *gc, void *data,
 			 */
 			gc->base = base;
 		} else {
-			dev_warn(&gdev->dev,
+			/*
+			 * Information, not a fault: a board whose GPIO numbers are a
+			 * user-space ABI (the Rockchip bank*32 bases with GPIO_SYSFS) sets
+			 * them on purpose.
+			 */
+			dev_info(&gdev->dev,
 				 "Static allocation of GPIO base is deprecated, use dynamic allocation.\n");
 		}
 

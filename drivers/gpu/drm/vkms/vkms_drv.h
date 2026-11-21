@@ -4,6 +4,10 @@
 #define _VKMS_DRV_H_
 
 #include <linux/hrtimer.h>
+#include <linux/miscdevice.h>
+#include <linux/scatterlist.h>
+#include <linux/spinlock.h>
+#include <linux/wait.h>
 
 #include <drm/drm.h>
 #include <drm/drm_framebuffer.h>
@@ -96,6 +100,41 @@ struct vkms_crtc_state {
 	u64 frame_end;
 };
 
+/*
+ * NovaStar V-series: the frame hand-off the vendor added to vkms (stock V12 V1.4.1
+ * 4.19.193 Image, kallsyms-symbolised; vkms_misc_init @ 0xffffff800862c094 and the
+ * accessors it serves). The size of each frame buffer: vmalloc(0x800000) twice in
+ * vkms_misc_init (@ +0x94, +0xcc) and the read clamp in vkms_misc_read_dmabuf
+ * (@ 0xffffff800862be30).
+ */
+#define VKMS_MISC_FRAME_BUF_SIZE	0x800000
+
+/* One of the two frame buffers, at vkms_misc +0x70 + index * 0x10. */
+struct vkms_frame_buf {
+	/* +0x0: a complete frame is waiting to be read (vkms_get_rd_buf_state @ +0x50) */
+	bool valid;
+	/* +0x1: being written or read right now (vkms_get_rd_buf_state @ +0x30) */
+	bool busy;
+	/* +0x8: VKMS_MISC_FRAME_BUF_SIZE bytes of vmalloc memory (vkms_misc_init @ +0x9c) */
+	void *data;
+};
+
+/*
+ * The /dev/vkms_misc device and its double buffer. Field offsets are the ones the vendor
+ * accessors use; the names frame_lock / frame_wq are the vendor's own (lockdep class names
+ * "&(&vkms_misc->frame_lock)->rlock" @ 0xffffff800913561d and "&vkms_misc->frame_wq"
+ * @ 0xffffff8009135608).
+ */
+struct vkms_misc {
+	struct miscdevice misc;			/* +0x00: registered by vkms_misc_init */
+	bool opened;				/* +0x50: one opener (vkms_misc_open) */
+	u8 wr_index;				/* +0x51: buffer the next frame goes to */
+	u8 rd_index;				/* +0x52: buffer the next read returns */
+	spinlock_t frame_lock;			/* +0x58 */
+	struct vkms_frame_buf frame_buf[2];	/* +0x70 */
+	wait_queue_head_t frame_wq;		/* +0x90: woken by every written frame */
+};
+
 struct vkms_output {
 	struct drm_crtc crtc;
 	struct drm_encoder encoder;
@@ -113,6 +152,15 @@ struct vkms_output {
 	struct vkms_crtc_state *composer_state;
 
 	spinlock_t composer_lock;
+
+	/*
+	 * NovaStar V-series: the vendor keeps its misc device at the end of the output
+	 * (crtc + 0xfa0, after the 4.19 period_ns/event fields): vkms_output_init
+	 * @ 0xffffff800862b2cc passes &output->crtc + 0xfa0 to vkms_misc_init, and
+	 * drm_atomic_helper_page_flip_zmh @ 0xffffff800862b4d4 the same address to
+	 * vkms_write_buf.
+	 */
+	struct vkms_misc vkms_misc;
 };
 
 struct vkms_device;
@@ -149,6 +197,7 @@ int vkms_crtc_init(struct drm_device *dev, struct drm_crtc *crtc,
 		   struct drm_plane *primary, struct drm_plane *cursor);
 
 int vkms_output_init(struct vkms_device *vkmsdev, int index);
+int vkms_add_modes(struct drm_connector *connector);
 
 struct vkms_plane *vkms_plane_init(struct vkms_device *vkmsdev,
 				   enum drm_plane_type type, int index);
@@ -168,5 +217,10 @@ void vkms_writeback_row(struct vkms_writeback_job *wb, const struct line_buffer 
 
 /* Writeback */
 int vkms_enable_writeback_connector(struct vkms_device *vkmsdev);
+
+/* NovaStar V-series /dev/vkms_misc (vkms_misc.c) */
+int vkms_misc_init(struct vkms_misc *vkms_misc);
+void vkms_misc_deinit(struct vkms_misc *vkms_misc);
+int vkms_write_buf(struct vkms_misc *vkms_misc, struct sg_table *sgt, size_t size);
 
 #endif /* _VKMS_DRV_H_ */

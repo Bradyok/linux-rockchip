@@ -223,6 +223,9 @@ config USB_F_PRINTER
 config USB_F_TCM
 	tristate
 
+config USB_F_MTP
+	tristate
+
 # this first set of drivers all depend on bulk-capable hardware.
 
 config USB_CONFIGFS
@@ -385,6 +388,16 @@ config USB_CONFIGFS_F_FS
 	  of composite gadgets such that some of the functions are
 	  implemented in kernel space (for instance Ethernet, serial or
 	  mass storage) and other are implemented in user space.
+
+# NovaStar V-series: the Android MTP function the stock 4.19 kernel builds in
+# (CONFIG_USB_CONFIGFS_F_MTP=y, CONFIG_USB_F_MTP=y in the V12 kernel_config_4.19),
+# as rockchip-linux/kernel develop-4.4 drivers/usb/gadget/Kconfig declares it.
+config USB_CONFIGFS_F_MTP
+	bool "MTP gadget"
+	depends on USB_CONFIGFS
+	select USB_F_MTP
+	help
+	  USB gadget MTP support
 
 config USB_CONFIGFS_F_UAC1
 	bool "Audio Class 1.0"

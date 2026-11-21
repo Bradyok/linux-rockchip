@@ -40,6 +40,9 @@
 #ifndef __LINUX_USB_CDC_NCM_H
 #define __LINUX_USB_CDC_NCM_H
 
+#include <linux/wait.h>
+#include <linux/workqueue.h>
+
 #define CDC_NCM_COMM_ALTSETTING_NCM		0
 #define CDC_NCM_COMM_ALTSETTING_MBIM		1
 
@@ -151,6 +154,15 @@ struct cdc_ncm_ctx {
 	u64 tx_ntbs;
 	u64 rx_overhead;
 	u64 rx_ntbs;
+
+	/* the ASIX AX88179A/B's suspend/resume after an open with no notification (cdc_ncm.c, cdc_ncm_asix_kick_work) */
+	struct delayed_work asix_kick;
+	wait_queue_head_t asix_kick_wq;
+	bool asix_kick_device;
+	bool asix_kick_needed;
+	bool asix_kick_suspended;
+	bool asix_kick_resumed;
+	bool asix_kick_abort;
 };
 
 u8 cdc_ncm_select_altsetting(struct usb_interface *intf);

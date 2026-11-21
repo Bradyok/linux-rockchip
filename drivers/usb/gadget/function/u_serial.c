@@ -82,7 +82,7 @@
  */
 #define QUEUE_SIZE		16
 #define WRITE_BUF_SIZE		8192		/* TX only */
-#define GS_CONSOLE_BUF_SIZE	8192
+#define GS_CONSOLE_BUF_SIZE	(512 * 1024)	/* NovaOS bring-up: replay the whole boot log */
 
 /* Prevents race conditions while accessing gser->ioport */
 static DEFINE_SPINLOCK(serial_port_lock);
@@ -90,7 +90,7 @@ static DEFINE_SPINLOCK(serial_port_lock);
 /* console info */
 struct gs_console {
 	struct console		console;
-	struct work_struct	work;
+	struct delayed_work	work;
 	spinlock_t		lock;
 	struct usb_request	*req;
 	struct kfifo		buf;
@@ -904,7 +904,7 @@ static void gs_console_complete_out(struct usb_ep *ep, struct usb_request *req)
 		/* normal completion */
 		spin_lock(&cons->lock);
 		req->length = 0;
-		schedule_work(&cons->work);
+		schedule_delayed_work(&cons->work, 0);
 		spin_unlock(&cons->lock);
 		break;
 	case -ECONNRESET:
@@ -951,7 +951,7 @@ static void __gs_console_push(struct gs_console *cons)
 
 static void gs_console_work(struct work_struct *work)
 {
-	struct gs_console *cons = container_of(work, struct gs_console, work);
+	struct gs_console *cons = container_of(to_delayed_work(work), struct gs_console, work);
 
 	spin_lock_irq(&cons->lock);
 
@@ -974,7 +974,7 @@ static void gs_console_write(struct console *co,
 		cons->missed += count - n;
 
 	if (cons->req && !cons->req->length)
-		schedule_work(&cons->work);
+		schedule_delayed_work(&cons->work, 0);
 
 	spin_unlock_irqrestore(&cons->lock, flags);
 }
@@ -1009,7 +1009,8 @@ static int gs_console_connect(struct gs_port *port)
 
 	pr_debug("ttyGS%d: console connected!\n", port->port_num);
 
-	schedule_work(&cons->work);
+	/* NovaOS bring-up: hold the replay until the host has the port open. */
+	schedule_delayed_work(&cons->work, 5 * HZ);
 
 	return 0;
 }
@@ -1056,7 +1057,7 @@ static int gs_console_init(struct gs_port *port)
 	cons->console.flags = CON_PRINTBUFFER;
 	cons->console.index = port->port_num;
 
-	INIT_WORK(&cons->work, gs_console_work);
+	INIT_DELAYED_WORK(&cons->work, gs_console_work);
 	spin_lock_init(&cons->lock);
 
 	err = kfifo_alloc(&cons->buf, GS_CONSOLE_BUF_SIZE, GFP_KERNEL);
@@ -1091,7 +1092,7 @@ static void gs_console_exit(struct gs_port *port)
 		gs_console_disconnect(port);
 	spin_unlock_irq(&port->port_lock);
 
-	cancel_work_sync(&cons->work);
+	cancel_delayed_work_sync(&cons->work);
 	kfifo_free(&cons->buf);
 	kfree(cons);
 	port->console = NULL;

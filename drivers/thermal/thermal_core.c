@@ -1511,6 +1511,18 @@ thermal_zone_device_register_with_trips(const char *type,
 	else
 		governor = def_governor;
 
+	/*
+	 * A governor name nothing is registered under: the default, said
+	 * once. Stored as NULL, it would be dereferenced at the zone's first
+	 * update.
+	 */
+	if (!governor && tz->tzp && tz->tzp->governor_name) {
+		pr_warn("thermal zone %s: no governor named \"%s\", using %s\n",
+			type, tz->tzp->governor_name,
+			def_governor ? def_governor->name : "none");
+		governor = def_governor;
+	}
+
 	result = thermal_set_governor(tz, governor);
 	if (result) {
 		mutex_unlock(&thermal_governor_lock);

@@ -7,6 +7,19 @@ config DRM_DW_HDMI
 	select REGMAP_MMIO
 	select CEC_CORE if CEC_NOTIFIER
 
+config DRM_DW_HDMI_NOVA_VSERIES
+	bool "NovaStar V-series vendor HDMI mode list (drm_mode= bootarg)"
+	depends on DRM_DW_HDMI=y
+	help
+	  The NovaStar V-series stock kernel's dw-hdmi, on a board whose HDMI
+	  device-tree node has the nova,vendor-drm-mode property: the drm_mode=
+	  timing U-Boot passes becomes the connector's preferred mode, the
+	  connector reports the vendor's fixed mode tables instead of the
+	  EDID's, and the EDID only decides the HDMI/DVI bit of FC_INVIDCONF.
+	  A board without the property keeps the stock driver. Built in only
+	  (drm_mode= is a __setup handler). Say N unless building NovaOS for a
+	  V-series unit.
+
 config DRM_DW_HDMI_AHB_AUDIO
 	tristate "Synopsys Designware AHB Audio interface"
 	depends on DRM_DW_HDMI && SND

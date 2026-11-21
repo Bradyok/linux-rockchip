@@ -1580,6 +1580,11 @@ static bool phy_drv_supports_irq(const struct phy_driver *phydrv)
 	return phydrv->config_intr && phydrv->handle_interrupt;
 }
 
+#ifdef CONFIG_NOVA_COEX_RTL8363
+/* drivers/net/phy/nova_kseries.c: the COEX rtl8367c SDK's SMI bus (see phy_attach_direct) */
+void nova_rtl8363_attach_smi_bus(struct mii_bus *bus);
+#endif
+
 /**
  * phy_attach_direct - attach a network device to a given PHY device pointer
  * @dev: network device to attach
@@ -1708,6 +1713,18 @@ int phy_attach_direct(struct net_device *dev, struct phy_device *phydev,
 	 */
 	if (using_genphy)
 		phydev->port = PORT_MII;
+
+#ifdef CONFIG_NOVA_COEX_RTL8363
+	/*
+	 * NovaStar COEX: the stock KU20 phy_attach_direct (@ 0xffffff80087cf420) copies the
+	 * attaching PHY's mdio.bus into the rtl8367c SDK's bus global here (+0x228, after the
+	 * phydev fields are set, before netif_carrier_off / phy_init_hw / phy_resume); the
+	 * SDK's smi_read/smi_write reach the RTL8363 through it at address 29
+	 * (drivers/net/phy/nova_kseries.c). It keeps the bus only on a board whose DT says
+	 * nova,switch = "rtl8363"; on every other board the call does nothing.
+	 */
+	nova_rtl8363_attach_smi_bus(phydev->mdio.bus);
+#endif
 
 	/* Initial carrier state is off as the phy is about to be
 	 * (re)initialized.
@@ -2962,6 +2979,31 @@ int genphy_read_abilities(struct phy_device *phydev)
 	return 0;
 }
 EXPORT_SYMBOL(genphy_read_abilities);
+
+/* Some PHYs support direct C45 register access but not C22 indirect
+ * MMD access (registers 13 and 14). When discovered via C22, phylib
+ * routes MMD access through the indirect path, which won't work on
+ * these devices. These helpers bypass indirect access and use the bus
+ * C45 accessors directly.
+ */
+int genphy_read_mmd_c45(struct phy_device *phydev, int devnum, u16 regnum)
+{
+	struct mii_bus *bus = phydev->mdio.bus;
+	int addr = phydev->mdio.addr;
+
+	return __mdiobus_c45_read(bus, addr, devnum, regnum);
+}
+EXPORT_SYMBOL(genphy_read_mmd_c45);
+
+int genphy_write_mmd_c45(struct phy_device *phydev, int devnum, u16 regnum,
+			 u16 val)
+{
+	struct mii_bus *bus = phydev->mdio.bus;
+	int addr = phydev->mdio.addr;
+
+	return __mdiobus_c45_write(bus, addr, devnum, regnum, val);
+}
+EXPORT_SYMBOL(genphy_write_mmd_c45);
 
 /* This is used for the phy device which doesn't support the MMD extended
  * register access, but it does have side effect when we are trying to access

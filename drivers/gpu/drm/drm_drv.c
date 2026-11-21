@@ -147,11 +147,34 @@ static int drm_minor_alloc(struct drm_device *dev, enum drm_minor_type type)
 	minor->type = type;
 	minor->dev = dev;
 
-	r = xa_alloc(drm_minor_get_xa(type), &minor->index,
-		     NULL, DRM_MINOR_LIMIT(type), GFP_KERNEL);
-	if (r == -EBUSY && (type == DRM_MINOR_PRIMARY || type == DRM_MINOR_RENDER))
-		r = xa_alloc(&drm_minors_xa, &minor->index,
-			     NULL, DRM_EXTENDED_MINOR_LIMIT, GFP_KERNEL);
+	/*
+	 * NovaStar V-series stock 4.19.193 kernel, drm_minor_alloc @ 0xffffff800860258c:
+	 * strstr(dev->driver->name, "vkms") (@ +0x88, "vkms" @ 0xffffff8009131324) picks
+	 * idr_alloc(&drm_minors_idr, NULL, 2, 3, GFP_NOWAIT) (@ +0x90..+0xa8), i.e. minor 2
+	 * and nothing else, so the vendor vkms is always /dev/dri/card2 whatever order the
+	 * DRM drivers probe in (stock boot log: vkms initialised at 0.4185 s "on minor 2",
+	 * rknpu after it at 0.4302 s "on minor 1", on a VX1000 Pro). libhal_bsp
+	 * hal_vkms_init @ 0x14a64c opens that fixed path
+	 * (hal_vkms.c:0x5f). Every other
+	 * driver keeps the normal range (@ +0x130: start 64*type, end 64*type+64); when
+	 * minor 2 is taken the vendor allocation fails rather than spilling elsewhere. Every
+	 * allocation is logged (@ +0xbc..+0xdc, "[zmh]%s, card id: name %s, r=%d" @
+	 * 0xffffff8009131329). Compiled only into a kernel that has vkms, so the models
+	 * without it keep the unmodified allocator.
+	 */
+	if (IS_ENABLED(CONFIG_DRM_VKMS) && strstr(dev->driver->name, "vkms")) {
+		r = xa_alloc(drm_minor_get_xa(type), &minor->index,
+			     NULL, XA_LIMIT(2, 2), GFP_KERNEL);
+	} else {
+		r = xa_alloc(drm_minor_get_xa(type), &minor->index,
+			     NULL, DRM_MINOR_LIMIT(type), GFP_KERNEL);
+		if (r == -EBUSY && (type == DRM_MINOR_PRIMARY || type == DRM_MINOR_RENDER))
+			r = xa_alloc(&drm_minors_xa, &minor->index,
+				     NULL, DRM_EXTENDED_MINOR_LIMIT, GFP_KERNEL);
+	}
+	if (IS_ENABLED(CONFIG_DRM_VKMS))
+		printk("[zmh]%s, card id: name %s, r=%d", __func__, dev->driver->name,
+		       r < 0 ? r : (int)minor->index);
 	if (r < 0)
 		return r;
 

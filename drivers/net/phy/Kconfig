@@ -28,6 +28,16 @@ if PHYLIB
 config SWPHY
 	bool
 
+config NOVA_MDIO_SWITCH
+	bool
+	depends on OF
+	help
+	  The NovaStar V-series, N-series and COEX boards' MDIO address 29
+	  indirect register access of the on-board RTL8363 switch
+	  (mdiobus_read/mdiobus_write), on the one MDIO bus whose device tree
+	  node carries the "nova,switch" property. Selected by the drivers
+	  that reach the switch through it.
+
 config LED_TRIGGER_PHY
 	bool "Support LED triggers for tracking link state"
 	depends on LEDS_TRIGGERS
@@ -342,6 +352,45 @@ config QSEMI_PHY
 	tristate "Quality Semiconductor PHYs"
 	help
 	  Currently supports the qs6612
+
+config NOVA_KSERIES_SWITCH
+	bool "NovaStar V-series nova kseries Gigabit Ethernet (RTL8363SC-VB switch)"
+	depends on PHYLIB=y && GPIOLIB && OF
+	select NOVA_MDIO_SWITCH
+	help
+	  The NovaStar V-series "nova kseries Gigabit Ethernet" PHY (phy_id
+	  0x55aa0001) on gmac1 phy@9, whose config_init runs the RTL8363SC-VB
+	  switch bring-up (rtl8363_switch_init) over the stmmac MDIO bus at PHY
+	  address 29. Registered only on a board whose device tree says
+	  nova,switch = "kseries" on that MDIO bus; it builds beside the
+	  N-series and COEX legs.
+
+config NOVA_COEX_RTL8363
+	bool "NovaStar COEX built-in RTL8363 switch bring-up (rtl8363_switch_init)"
+	depends on PHYLIB=y && OF
+	select NOVA_MDIO_SWITCH
+	help
+	  The NovaStar COEX (KU20/MX20/MX30/MX40/CX40/MX6000) stock kernel's
+	  built-in RTL8367C SDK and its exported rtl8363_switch_init, which the
+	  out-of-tree nova-drv-rtl8363-cfg module calls: the RTL8363 bring-up
+	  with ext port 0x10 at RGMII tx delay 1 / rx delay 2, over the MDIO
+	  bus the last attached PHY sits on, at PHY address 29. Acts only on a
+	  board whose device tree says nova,switch = "rtl8363" on that MDIO
+	  bus; it builds beside the V-series and N-series legs.
+
+config NOVA_NSERIES_SWITCH
+	bool "NovaStar N-series nova nseries Gigabit Ethernet (RTL8363 + second switch)"
+	depends on PHYLIB=y && GPIOLIB && PROC_FS && OF
+	select NOVA_MDIO_SWITCH
+	help
+	  The NovaStar N-series (N10/N20/P10/P20) "nova nseries Gigabit
+	  Ethernet" PHY (phy_id 0x55aa0001) on gmac1 phy@9, whose config_init
+	  steers the gmac1 MDIO bus with GPIOs 129/128/127 and brings up the
+	  RTL8363 and the second switch behind it over the Realtek RTL8367C /
+	  RTL8367D SDK at PHY address 29, plus /proc/rtl8363_reinit.
+	  Registered only on a board whose device tree says
+	  nova,switch = "nseries" on that MDIO bus; it builds beside the
+	  V-series and COEX legs.
 
 config REALTEK_PHY
 	tristate "Realtek PHYs"

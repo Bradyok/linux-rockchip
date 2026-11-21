@@ -463,6 +463,19 @@ static void i2c_gpio_remove(struct platform_device *pdev)
 
 static const struct of_device_id i2c_gpio_dt_ids[] = {
 	{ .compatible = "i2c-gpio", },
+#ifdef CONFIG_I2C_GPIO_NOVA_COMPATIBLES
+	/*
+	 * The NovaStar vendor names. The stock COEX 4.19 kernel builds i2c-gpio in with this table
+	 * (CX40 Pro V1.5.1 boot/kernel e3513f8f, i2c_gpio_dt_ids: "i2c-gpio", "i2c-gpio1" ..
+	 * "i2c-gpio6"), and its board DTs name every bit-banged bus by one of them.
+	 */
+	{ .compatible = "i2c-gpio1", },
+	{ .compatible = "i2c-gpio2", },
+	{ .compatible = "i2c-gpio3", },
+	{ .compatible = "i2c-gpio4", },
+	{ .compatible = "i2c-gpio5", },
+	{ .compatible = "i2c-gpio6", },
+#endif
 	{ /* sentinel */ }
 };
 

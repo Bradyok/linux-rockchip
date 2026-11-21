@@ -217,11 +217,22 @@ static int thermal_of_monitor_init(struct device_node *np, int *delay, int *pdel
 static void thermal_of_parameters_init(struct device_node *np,
 				       struct thermal_zone_params *tzp)
 {
+	const char *governor;
 	int coef[2];
 	int ncoef = ARRAY_SIZE(coef);
 	int prop, ret;
 
 	tzp->no_hwmon = true;
+
+	/*
+	 * nova,thermal-governor: the zone's governor by name ("step_wise",
+	 * "power_allocator", ...) in place of the kernel's default. A fan
+	 * stepped by trips needs step_wise on a kernel whose default is
+	 * power_allocator, which drives only cooling devices with a power
+	 * model. The string is the device tree's and lives as long as it.
+	 */
+	if (!of_property_read_string(np, "nova,thermal-governor", &governor))
+		tzp->governor_name = governor;
 
 	if (!of_property_read_u32(np, "sustainable-power", &prop))
 		tzp->sustainable_power = prop;

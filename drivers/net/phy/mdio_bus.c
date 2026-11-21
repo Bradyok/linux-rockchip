@@ -672,6 +672,25 @@ static bool mdiobus_prevent_c45_scan(struct mii_bus *bus)
 	return false;
 }
 
+#ifdef CONFIG_NOVA_MDIO_SWITCH
+/*
+ * NovaStar V-series / N-series / COEX: the MDIO bus the on-board RTL8363 switch hangs off, whose
+ * PHY address 29 mdiobus_read/mdiobus_write turn into the switch's indirect register access
+ * (below). The board DT names it with `nova,switch` on the bus node (the GMAC's mdio child);
+ * it is taken once that bus has registered (an of_mdiobus_register bus scans nothing itself:
+ * phy_mask is ~0, so its DT children, registered after this, are the first accesses) and
+ * dropped when it unregisters. One board has one such bus, so the per-access test is one
+ * compare; every other bus, and every bus of a board whose DT names none, keeps plain
+ * Clause-22 access to address 29.
+ */
+static struct mii_bus *nova_switch_bus;
+
+static inline bool nova_mdio_switch_addr(struct mii_bus *bus, int addr)
+{
+	return addr == 29 && bus == READ_ONCE(nova_switch_bus);
+}
+#endif
+
 /**
  * __mdiobus_register - bring up all the PHYs on a given bus and attach them to bus
  * @bus: target mii_bus
@@ -781,6 +800,10 @@ int __mdiobus_register(struct mii_bus *bus, struct module *owner)
 
 	mdiobus_setup_mdiodev_from_board_info(bus, mdiobus_create_device);
 
+#ifdef CONFIG_NOVA_MDIO_SWITCH
+	if (of_property_present(bus->dev.of_node, "nova,switch"))
+		WRITE_ONCE(nova_switch_bus, bus);
+#endif
 	bus->state = MDIOBUS_REGISTERED;
 	dev_dbg(&bus->dev, "probed\n");
 	return 0;
@@ -826,6 +849,10 @@ void mdiobus_unregister(struct mii_bus *bus)
 	if (bus->reset_gpiod)
 		gpiod_set_value_cansleep(bus->reset_gpiod, 1);
 
+#ifdef CONFIG_NOVA_MDIO_SWITCH
+	if (READ_ONCE(nova_switch_bus) == bus)
+		WRITE_ONCE(nova_switch_bus, NULL);
+#endif
 	device_del(&bus->dev);
 }
 EXPORT_SYMBOL(mdiobus_unregister);
@@ -1108,6 +1135,32 @@ int mdiobus_read(struct mii_bus *bus, int addr, u32 regnum)
 	int retval;
 
 	mutex_lock(&bus->mdio_lock);
+#ifdef CONFIG_NOVA_MDIO_SWITCH
+	/*
+	 * NovaStar V-series: the stock 4.19.193 mdiobus_read (@ 0xffffff80087d537c in the V12
+	 * V1.4.1 Image) turns an access to PHY address 29 (+0x44 `cmp w20, #0x1d`) into the
+	 * RTL8363 switch's indirect register read, all under the bus lock: register 2 reads as
+	 * 0x1c and register 3 as 0xc922 (+0x4c..+0x58, +0xd0..+0xdc), any other register is
+	 * 31 <- 0x000e, 23 <- regnum, 21 <- 0x0001, then the value from 25 (+0x5c..+0xa4).
+	 * rtl8367c_smi_read (stmmac_main.c) reaches the switch only through this. The COEX
+	 * kernel's mdiobus_read (KU20 V1.5.1 @ 0xffffff80087d026c) is the same code, and its
+	 * rtl8367c SDK (nova_kseries.c, CONFIG_NOVA_COEX_RTL8363) reaches the switch the same way.
+	 * The stock kernels do it on every bus; here only on the bus whose DT node says
+	 * `nova,switch` (nova_switch_bus), so a board without the switch keeps plain access to 29.
+	 */
+	if (nova_mdio_switch_addr(bus, addr)) {
+		if (regnum == 2) {
+			retval = 0x1c;
+		} else if (regnum == 3) {
+			retval = 0xc922;
+		} else {
+			__mdiobus_write(bus, addr, 31, 0x000e);
+			__mdiobus_write(bus, addr, 23, regnum);
+			__mdiobus_write(bus, addr, 21, 0x0001);
+			retval = __mdiobus_read(bus, addr, 25);
+		}
+	} else
+#endif
 	retval = __mdiobus_read(bus, addr, regnum);
 	mutex_unlock(&bus->mdio_lock);
 
@@ -1207,6 +1260,21 @@ int mdiobus_write(struct mii_bus *bus, int addr, u32 regnum, u16 val)
 	int err;
 
 	mutex_lock(&bus->mdio_lock);
+#ifdef CONFIG_NOVA_MDIO_SWITCH
+	/*
+	 * NovaStar V-series: the stock mdiobus_write (@ 0xffffff80087d545c) writes PHY address
+	 * 29 (+0x4c) as the RTL8363 switch's indirect register write under the bus lock:
+	 * 31 <- 0x000e, 23 <- regnum, 24 <- val, 21 <- 0x0003, returning the last write's result
+	 * (+0x54..+0xa4). The COEX mdiobus_write (KU20 V1.5.1 @ 0xffffff80087d034c) is the same.
+	 * Only on the `nova,switch` bus, as mdiobus_read.
+	 */
+	if (nova_mdio_switch_addr(bus, addr)) {
+		__mdiobus_write(bus, addr, 31, 0x000e);
+		__mdiobus_write(bus, addr, 23, regnum);
+		__mdiobus_write(bus, addr, 24, val);
+		err = __mdiobus_write(bus, addr, 21, 0x0003);
+	} else
+#endif
 	err = __mdiobus_write(bus, addr, regnum, val);
 	mutex_unlock(&bus->mdio_lock);
 

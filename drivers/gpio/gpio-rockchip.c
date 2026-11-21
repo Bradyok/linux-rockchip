@@ -740,6 +740,7 @@ static int rockchip_interrupts_register(struct rockchip_pin_bank *bank)
 static int rockchip_gpiolib_register(struct rockchip_pin_bank *bank)
 {
 	struct gpio_chip *gc;
+	u32 nova_base;
 	int ret;
 
 	bank->gpio_chip = rockchip_gpiolib_chip;
@@ -757,6 +758,15 @@ static int rockchip_gpiolib_register(struct rockchip_pin_bank *bank)
 		gc->base = GPIO_MAX_PINS * bank->bank_num;
 	if (!gc->ngpio)
 		gc->ngpio = GPIO_MAX_PINS;
+	/*
+	 * NovaStar: a board whose vendor userspace numbers GPIOs by a stock kernel's global
+	 * numbering gives each bank that number in its DT node ("nova,gpio-base", the global
+	 * number of line 0). The H-series control card (RK3288): its 4.4 BSP numbered every
+	 * chip from 1000, so the vendor binaries and scripts write /sys/class/gpio/gpio1200 for
+	 * GPIO6_C0.
+	 */
+	if (!device_property_read_u32(bank->dev, "nova,gpio-base", &nova_base))
+		gc->base = nova_base;
 	if (!gc->label) {
 		gc->label = kasprintf(GFP_KERNEL, "gpio%d", bank->bank_num);
 		if (!gc->label)
@@ -1202,8 +1212,13 @@ static int rockchip_gpio_probe(struct platform_device *pdev)
 	if (!device_property_read_bool(bank->dev, "gpio-ranges") && pctldev) {
 		struct gpio_chip *gc = &bank->gpio_chip;
 
+		/*
+		 * The pin range maps line 0 to the bank's first PINCTRL pin, which is its
+		 * pin_base whatever global GPIO number the chip got (the two only coincide
+		 * when the base is pin_base).
+		 */
 		ret = gpiochip_add_pin_range(gc, dev_name(pctldev->dev), 0,
-					     gc->base, gc->ngpio);
+					     bank->pin_base, gc->ngpio);
 		if (ret) {
 			dev_err(bank->dev, "Failed to add pin range\n");
 			goto err_unlock;

@@ -28,6 +28,7 @@
 #include <linux/of.h>
 #include <linux/delay.h>
 #include <linux/kthread.h>
+#include <soc/rockchip/rockchip_ipa.h>
 
 #include "mali_kbase.h"
 #include "mali_kbase_defs.h"
@@ -91,6 +92,9 @@ KBASE_EXPORT_TEST_API(kbase_simple_power_model_set_dummy_temp);
  * @poll_temperature_thread: Handle for temperature polling thread
  * @current_temperature: Most recent value of polled temperature
  * @temperature_poll_interval_ms: How often temperature should be checked, in ms
+ * @vendor_model:        the parameters come from the GPU node's Rockchip
+ *                       "simple-power-model" child, in its conventions (see
+ *                       vendor_model_init())
  */
 
 struct kbase_ipa_model_simple_data {
@@ -102,6 +106,7 @@ struct kbase_ipa_model_simple_data {
 	struct task_struct *poll_temperature_thread;
 	int current_temperature;
 	int temperature_poll_interval_ms;
+	bool vendor_model;
 };
 #define FALLBACK_STATIC_TEMPERATURE 55000
 
@@ -226,28 +231,132 @@ static int model_dynamic_coeff(struct kbase_ipa_model *model, u32 *coeffp)
 	return 0;
 }
 
+/*
+ * Static power in the Rockchip "simple-power-model" conventions, the same arithmetic as
+ * rockchip_ipa_get_static_power() (drivers/soc/rockchip/rockchip_ipa.c): the ts
+ * coefficients are stored x10 (hence / 10000 where the ARM model divides by 1000), and
+ * the static power scales as V^4. The temperature is the one poll_temperature() keeps,
+ * not a thermal_zone_get_temp() call from here (see the comment above poll_temperature()).
+ */
+static u32 vendor_temp_scaling_factor(s32 ts[4], s64 t)
+{
+	const s64 t2 = div_s64((t * t), 1000);
+	const s64 t3 = div_s64((t * t2), 1000);
+	const s64 res_big = ts[3] * t3 + ts[2] * t2 + ts[1] * t + ts[0] * 1000LL;
+	s64 res_unclamped = div_s64(res_big, 10000);
+
+	return clamp(res_unclamped, (s64)0, (s64)10000000);
+}
+
+static u32 vendor_volt_scaling_factor(const u32 voltage_mv)
+{
+	const u32 v2 = (voltage_mv * voltage_mv) / 1000;
+	const u32 v3 = (v2 * voltage_mv) / 1000;
+
+	return (v3 * voltage_mv) / 1000;
+}
+
+static int model_static_power(struct kbase_ipa_model *model, u32 voltage, u32 *powerp)
+{
+	struct kbase_ipa_model_simple_data *model_data =
+		(struct kbase_ipa_model_simple_data *)model->model_data;
+	u64 power_big;
+	u32 power;
+
+	if (!model_data->vendor_model)
+		return -ENOENT;
+
+	power_big = (u64)model_data->static_coefficient *
+		    vendor_temp_scaling_factor(model_data->ts,
+					       READ_ONCE(model_data->current_temperature));
+	power = div_u64(power_big, 1000000);
+	power_big = (u64)power * vendor_volt_scaling_factor(voltage);
+	*powerp = div_u64(power_big, 1000000);
+
+	return 0;
+}
+
+/*
+ * The GPU's own power model. Rockchip describes the RK356x Mali-G52 with a
+ * "simple-power-model" child of the GPU node (rk356x.dtsi gpu_power_model; the stock T40
+ * DTB carries the same node and values), not with this driver's
+ * "arm,mali-simple-power-model" binding, so without this the model starts with every
+ * coefficient zero and no thermal zone. The 4.19 Rockchip kbase consumed that node
+ * (backend/gpu/mali_kbase_devfreq.c there: rockchip_ipa_power_model_init() for the
+ * static power, its dynamic-coefficient for the dynamic power). Here it fills this
+ * model's parameters: dynamic-coefficient has the same units in both conventions
+ * (P = c * f[MHz] * V^2 / 1000 mW, kbase_scale_dynamic_power()), and the static
+ * coefficient is the one rockchip_ipa_power_model_init() scales by this chip's eFuse
+ * leakage. An arm,mali-simple-power-model node, if present, still takes precedence.
+ */
+static void vendor_model_init(struct kbase_ipa_model *model)
+{
+	struct kbase_ipa_model_simple_data *model_data =
+		(struct kbase_ipa_model_simple_data *)model->model_data;
+	struct device *dev = model->kbdev->dev;
+	struct ipa_power_model_data *rk;
+	struct device_node *np;
+	const char *tz_name;
+	char compat[64];
+
+	scnprintf(compat, sizeof(compat), "arm,%s", model->ops->name);
+	np = of_get_compatible_child(dev->of_node, compat);
+	if (np) {
+		of_node_put(np);
+		return;
+	}
+
+	np = of_get_compatible_child(dev->of_node, "simple-power-model");
+	if (!np)
+		return;
+
+	if (of_property_read_string(np, "thermal-zone", &tz_name)) {
+		dev_warn(dev, "simple-power-model has no thermal-zone\n");
+		goto out;
+	}
+
+	rk = rockchip_ipa_power_model_init(dev, "leakage");
+	if (IS_ERR_OR_NULL(rk)) {
+		dev_warn(dev, "simple-power-model unusable (%ld)\n", PTR_ERR(rk));
+		goto out;
+	}
+
+	model_data->static_coefficient = rk->static_coefficient;
+	model_data->dynamic_coefficient = rk->dynamic_coefficient;
+	memcpy(model_data->ts, rk->ts, sizeof(model_data->ts));
+	strscpy(model_data->tz_name, tz_name, sizeof(model_data->tz_name));
+	model_data->vendor_model = true;
+	dev_info(dev, "power model: simple-power-model, leakage %u, static %u, dynamic %u, zone %s\n",
+		 rk->leakage, rk->static_coefficient, rk->dynamic_coefficient, tz_name);
+	kfree(rk);
+out:
+	of_node_put(np);
+}
+
 static int add_params(struct kbase_ipa_model *model)
 {
 	int err = 0;
 	struct kbase_ipa_model_simple_data *model_data =
 		(struct kbase_ipa_model_simple_data *)model->model_data;
+	/* With the vendor model the values are already set; the DT entries are optional. */
+	const bool dt_required = !model_data->vendor_model;
 
 	err = kbase_ipa_model_add_param_s32(model, "static-coefficient",
-					    (s32 *)&model_data->static_coefficient, 1, true);
+					    (s32 *)&model_data->static_coefficient, 1, dt_required);
 	if (err)
 		goto end;
 
 	err = kbase_ipa_model_add_param_s32(model, "dynamic-coefficient",
-					    (s32 *)&model_data->dynamic_coefficient, 1, true);
+					    (s32 *)&model_data->dynamic_coefficient, 1, dt_required);
 	if (err)
 		goto end;
 
-	err = kbase_ipa_model_add_param_s32(model, "ts", model_data->ts, 4, true);
+	err = kbase_ipa_model_add_param_s32(model, "ts", model_data->ts, 4, dt_required);
 	if (err)
 		goto end;
 
 	err = kbase_ipa_model_add_param_string(model, "thermal-zone", model_data->tz_name,
-					       sizeof(model_data->tz_name), true);
+					       sizeof(model_data->tz_name), dt_required);
 	if (err)
 		goto end;
 
@@ -279,6 +388,7 @@ static int kbase_simple_power_model_init(struct kbase_ipa_model *model)
 		return err;
 	}
 
+	vendor_model_init(model);
 	err = add_params(model);
 	if (err) {
 		kbase_ipa_model_param_free_all(model);
@@ -361,5 +471,6 @@ struct kbase_ipa_model_ops kbase_simple_ipa_model_ops = {
 	.term = &kbase_simple_power_model_term,
 	.get_dynamic_coeff = &model_dynamic_coeff,
 	.get_static_coeff = &model_static_coeff,
+	.get_static_power = &model_static_power,
 };
 KBASE_EXPORT_TEST_API(kbase_simple_ipa_model_ops);

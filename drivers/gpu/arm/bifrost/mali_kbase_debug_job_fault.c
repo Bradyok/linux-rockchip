@@ -471,8 +471,11 @@ int kbase_debug_job_fault_dev_init(struct kbase_device *kbdev)
 	init_waitqueue_head(&(kbdev->job_fault_resume_wq));
 	spin_lock_init(&kbdev->job_fault_event_lock);
 
+	/* The name must fit WQ_NAME_LEN (32 with the NUL); the longer
+	 * "kbase_job_fault_resume_work_queue" was truncated with a warning.
+	 */
 	kbdev->job_fault_resume_workq =
-		alloc_workqueue("kbase_job_fault_resume_work_queue", WQ_MEM_RECLAIM, 1);
+		alloc_workqueue("kbase_job_fault_resume_wq", WQ_MEM_RECLAIM, 1);
 	if (!kbdev->job_fault_resume_workq)
 		return -ENOMEM;
 

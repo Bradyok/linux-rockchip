@@ -7,6 +7,7 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+#include <soc/rockchip/rockchip_opp_select.h>
 
 #include "panfrost_device.h"
 #include "panfrost_devfreq.h"
@@ -114,6 +115,67 @@ static int panfrost_read_speedbin(struct device *dev)
 	return devm_pm_opp_set_supported_hw(dev, &val, 1);
 }
 
+#if IS_REACHABLE(CONFIG_ROCKCHIP_OPP)
+/*
+ * A Rockchip GPU's OPP table can carry Rockchip's own voltage selection (by the chip's PVTM, leakage or bin:
+ * rockchip,pvtm-voltage-sel, rockchip,leakage-voltage-sel, rockchip,bin-voltage-sel), which picks one of its
+ * opp-microvolt-<name> sets. The generic OPP parser reads only opp-microvolt, so on such a chip the voltages would
+ * not be the ones the SoC vendor qualified it at. Rockchip's helper builds the table with that selection, its
+ * low-temperature adjustment and the "mali" supply, as Rockchip's own GPU driver does. Only on the RK3399 (Mali-T860),
+ * where this is known to be what the vendor driver runs; other SoCs keep the generic table.
+ */
+static const struct of_device_id panfrost_rockchip_opp_match[] = {
+	{},
+};
+
+static bool panfrost_devfreq_rockchip_opp(struct device *dev)
+{
+	struct device_node *np;
+	bool ret;
+
+	if (!of_machine_is_compatible("rockchip,rk3399"))
+		return false;
+	np = of_parse_phandle(dev->of_node, "operating-points-v2", 0);
+	if (!np)
+		return false;
+	ret = of_property_present(np, "rockchip,pvtm-voltage-sel") ||
+	      of_property_present(np, "rockchip,leakage-voltage-sel") ||
+	      of_property_present(np, "rockchip,bin-voltage-sel");
+	of_node_put(np);
+	return ret;
+}
+
+static void panfrost_devfreq_rockchip_uninit(void *data)
+{
+	struct panfrost_device *pfdev = data;
+
+	rockchip_uninit_opp_table(&pfdev->pdev->dev, &pfdev->pfdevfreq.rockchip_opp);
+}
+
+static int panfrost_devfreq_rockchip_init(struct panfrost_device *pfdev)
+{
+	struct device *dev = &pfdev->pdev->dev;
+	int ret;
+
+	rockchip_get_opp_data(panfrost_rockchip_opp_match, &pfdev->pfdevfreq.rockchip_opp);
+	ret = rockchip_init_opp_table(dev, &pfdev->pfdevfreq.rockchip_opp, NULL, "mali");
+	if (ret)
+		return ret;
+	/* before the devfreq device, so devm removes the devfreq device first and the table after it */
+	return devm_add_action_or_reset(dev, panfrost_devfreq_rockchip_uninit, pfdev);
+}
+#else
+static bool panfrost_devfreq_rockchip_opp(struct device *dev)
+{
+	return false;
+}
+
+static int panfrost_devfreq_rockchip_init(struct panfrost_device *pfdev)
+{
+	return -ENODEV;
+}
+#endif
+
 int panfrost_devfreq_init(struct panfrost_device *pfdev)
 {
 	int ret;
@@ -138,24 +200,34 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	if (ret)
 		return ret;
 
-	ret = devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names);
-	if (ret) {
-		/* Continue if the optional regulator is missing */
-		if (ret != -ENODEV) {
+	if (panfrost_devfreq_rockchip_opp(dev)) {
+		ret = panfrost_devfreq_rockchip_init(pfdev);
+		if (ret) {
 			if (ret != -EPROBE_DEFER)
-				DRM_DEV_ERROR(dev, "Couldn't set OPP regulators\n");
+				DRM_DEV_ERROR(dev, "Couldn't set up the Rockchip OPP table (%d)\n", ret);
 			return ret;
 		}
-	}
+		pfdevfreq->opp_of_table_added = true;
+	} else {
+		ret = devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names);
+		if (ret) {
+			/* Continue if the optional regulator is missing */
+			if (ret != -ENODEV) {
+				if (ret != -EPROBE_DEFER)
+					DRM_DEV_ERROR(dev, "Couldn't set OPP regulators\n");
+				return ret;
+			}
+		}
 
-	ret = devm_pm_opp_of_add_table(dev);
-	if (ret) {
-		/* Optional, continue without devfreq */
-		if (ret == -ENODEV)
-			ret = 0;
-		return ret;
+		ret = devm_pm_opp_of_add_table(dev);
+		if (ret) {
+			/* Optional, continue without devfreq */
+			if (ret == -ENODEV)
+				ret = 0;
+			return ret;
+		}
+		pfdevfreq->opp_of_table_added = true;
 	}
-	pfdevfreq->opp_of_table_added = true;
 
 	spin_lock_init(&pfdevfreq->lock);
 

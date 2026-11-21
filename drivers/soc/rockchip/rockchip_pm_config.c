@@ -592,10 +592,11 @@ static int pm_config_probe(struct platform_device *pdev)
 	else
 		sip_smc_set_suspend_mode(WKUP_SOURCE_CONFIG, config->wakeup_config, 0);
 
+	/* Optional: a board with no PWM-controlled regulator has nothing to list. */
 	if (of_property_read_u32_array(node,
 				       "rockchip,pwm-regulator-config",
 				       &config->pwm_regulator_config, 1))
-		dev_warn(&pdev->dev, "not set pwm-regulator-config\n");
+		dev_dbg(&pdev->dev, "not set pwm-regulator-config\n");
 	else
 		sip_smc_set_suspend_mode(PWM_REGULATOR_CONFIG,
 					 config->pwm_regulator_config,

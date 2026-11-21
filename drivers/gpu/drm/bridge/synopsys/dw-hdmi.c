@@ -175,6 +175,217 @@ static const u16 csc_coeff_rgb_full_to_rgb_limited[3][4] = {
 	{ 0x0000, 0x0000, 0x1b7c, 0x0020 }
 };
 
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+/*
+ * NovaStar V-series stock kernel (V12 V1.4.1 Image, 4.19.193, kallsyms recovered with
+ * vmlinux-to-elf, base 0xffffff8008080000). On a board whose HDMI node has
+ * nova,vendor-drm-mode the connector's mode list is one of these two tables, never the EDID's
+ * (dw_hdmi_connector_get_modes @ 0xffffff8008677d70). Each entry is transcribed from the
+ * Image's struct drm_display_mode (0xf0 bytes, type DRM_MODE_TYPE_DRIVER in every entry); the
+ * 4.19 .vrefresh field has no 6.12 counterpart (drm_mode_vrefresh()). The vendor's names are
+ * dw_hdmi_default_modes and dw_hdmi_kseries_modes; ours carry a nova_ prefix, because the
+ * stock 6.12 dw_hdmi_default_modes below stays the table of every other board.
+ *   dw_hdmi_nova_default_modes  (vendor dw_hdmi_default_modes @ 0xffffff80094c5740) 7 entries:
+ *                          used when U-Boot passed a valid drm_mode= (g_drm_mode.clock > 0);
+ *                          get_modes writes that timing over entry 0
+ *                          (@ 0xffffff8008677f3c-0xffffff8008677f94), so the table is
+ *                          writable, as the vendor's is (.data)
+ *   dw_hdmi_nova_kseries_modes  (vendor dw_hdmi_kseries_modes @ 0xffffff80094c5dd0) 8 entries:
+ *                          used without one
+ */
+static struct drm_display_mode dw_hdmi_nova_default_modes[] = {
+	/* 1920x1080@60Hz 16:9 */
+	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 148500, 1920, 2008,
+		   2052, 2200, 0, 1080, 1084, 1089, 1125, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1280x720@60Hz 16:9 */
+	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1390,
+		   1430, 1650, 0, 720, 725, 730, 750, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1920x1080@50Hz 16:9 */
+	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 148500, 1920, 2448,
+		   2492, 2640, 0, 1080, 1084, 1089, 1125, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1280x720@50Hz 16:9 */
+	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1720,
+		   1760, 1980, 0, 720, 725, 730, 750, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1024x768@60Hz (the vendor entry's .vrefresh and aspect ratio are both 0) */
+	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 65000, 1024, 1048,
+		   1184, 1344, 0, 768, 771, 777, 806, 0,
+		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_NONE, },
+	/* 720x576@50Hz 4:3 */
+	{ DRM_MODE("720x576", DRM_MODE_TYPE_DRIVER, 27000, 720, 732,
+		   796, 864, 0, 576, 581, 586, 625, 0,
+		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_4_3, },
+	/* 720x480@60Hz 4:3 */
+	{ DRM_MODE("720x480", DRM_MODE_TYPE_DRIVER, 27000, 720, 736,
+		   798, 858, 0, 480, 489, 495, 525, 0,
+		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_4_3, },
+};
+
+static const struct drm_display_mode dw_hdmi_nova_kseries_modes[] = {
+	/* 3840x2160@60Hz 16:9 */
+	{ DRM_MODE("3840x2160", DRM_MODE_TYPE_DRIVER, 594000, 3840, 4016,
+		   4104, 4400, 0, 2160, 2168, 2178, 2250, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1920x1080@60Hz 16:9 */
+	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 148500, 1920, 2008,
+		   2052, 2200, 0, 1080, 1084, 1089, 1125, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1280x720@60Hz 16:9 */
+	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1390,
+		   1430, 1650, 0, 720, 725, 730, 750, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1920x1080@50Hz 16:9 */
+	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 148500, 1920, 2448,
+		   2492, 2640, 0, 1080, 1084, 1089, 1125, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1280x720@50Hz 16:9 */
+	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1720,
+		   1760, 1980, 0, 720, 725, 730, 750, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
+	/* 1024x768@60Hz */
+	{ DRM_MODE("1024x768", DRM_MODE_TYPE_DRIVER, 65000, 1024, 1048,
+		   1184, 1344, 0, 768, 771, 777, 806, 0,
+		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_NONE, },
+	/* 720x576@50Hz 4:3 */
+	{ DRM_MODE("720x576", DRM_MODE_TYPE_DRIVER, 27000, 720, 732,
+		   796, 864, 0, 576, 581, 586, 625, 0,
+		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_4_3, },
+	/* 720x480@60Hz 4:3 */
+	{ DRM_MODE("720x480", DRM_MODE_TYPE_DRIVER, 27000, 720, 736,
+		   798, 858, 0, 480, 489, 495, 525, 0,
+		   DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC),
+	  .picture_aspect_ratio = HDMI_PICTURE_ASPECT_4_3, },
+};
+
+/*
+ * The timing U-Boot passes as drm_mode= (the V12 U-Boot: drm_mode=148500,1920,2008,2052,2200,1,
+ * 1080,1084,1089,1125,1), parsed once at boot by drm_mode_setup. The vendor's object is the
+ * 0xf0-byte struct drm_display_mode at 0xffffff800963a1f0 (drm_mode_setup memsets it,
+ * @ 0xffffff800929ea2c); "g_drm_mode" is its name in the vendor's own log line (@ 0xffffff800913eafc).
+ */
+static struct drm_display_mode g_drm_mode;
+
+/*
+ * Whether the last EDID read found an HDMI (not DVI) sink: the byte at 0xffffff800963a1e8,
+ * written beside hdmi->sink_is_hdmi by the EDID probes in connector detect
+ * (@ 0xffffff8008677c10) and get_modes (@ 0xffffff8008677e50), and read by hdmi_av_composer for
+ * FC_INVIDCONF's DVI/HDMI bit (inlined in dw_hdmi_setup @ 0xffffff8008675244). hdmi->sink_is_hdmi
+ * itself is overwritten by the force_output rule at the end of get_modes, so on the vendor
+ * kernel only this byte carries the EDID's answer to the encoder. The vendor object has no
+ * symbol; the name is ours.
+ */
+static bool dw_hdmi_edid_sink_is_hdmi;
+
+/*
+ * str_skip @ 0xffffff8008678120: step over the current number, then over the separators
+ * (' ' or ',') after it.
+ */
+static void str_skip(char **str)
+{
+	while (**str != ' ' && **str != ',')
+		(*str)++;
+	while (**str == ' ' || **str == ',')
+		(*str)++;
+}
+
+/*
+ * drm_mode_setup @ 0xffffff800929e9e0, the __setup("drm_mode=") handler (obs_kernel_param
+ * @ 0xffffff80093d12b0: str 0xffffff80093c5258 "drm_mode=", early 0). Eleven comma-separated
+ * numbers: clock, hdisplay, hsync_start, hsync_end, htotal, hsync polarity, vdisplay,
+ * vsync_start, vsync_end, vtotal, vsync polarity; a non-zero polarity sets the P*SYNC flag and
+ * a zero one sets nothing. It returns 0 on success as the vendor's does, so the kernel still
+ * hands drm_mode= on to init (and 6.12 lists it among the unknown parameters); an empty or
+ * missing value returns -1.
+ *
+ * Only a board that asks for the vendor mode list parses it: one whose device tree has a node
+ * with nova,vendor-drm-mode (the V-series HDMI node). On any other board this returns 0 at
+ * once, so drm_mode= stays the unknown parameter stock 6.12 has, and nothing is logged.
+ * __setup handlers run from start_kernel's parse_args, after setup_arch has unflattened the
+ * device tree, so the lookup sees the board's tree.
+ */
+static int __init drm_mode_setup(char *str)
+{
+	unsigned long hs_polarity, vs_polarity;
+	struct device_node *np;
+	int vrefresh = 0;
+
+	np = of_find_node_with_property(NULL, "nova,vendor-drm-mode");
+	if (!np)
+		return 0;
+	of_node_put(np);
+
+	memset(&g_drm_mode, 0, sizeof(g_drm_mode));
+	if (!str || !*str)
+		return -1;
+
+	printk(KERN_DEFAULT "[zmh]%s, str is %s\n", __func__, str);
+	g_drm_mode.clock = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.hdisplay = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.hsync_start = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.hsync_end = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.htotal = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	hs_polarity = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	if (hs_polarity)
+		g_drm_mode.flags |= DRM_MODE_FLAG_PHSYNC;
+	g_drm_mode.vdisplay = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.vsync_start = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.vsync_end = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	g_drm_mode.vtotal = simple_strtoul(str, NULL, 10);
+	str_skip(&str);
+	vs_polarity = simple_strtoul(str, NULL, 10);
+	/*
+	 * The 4.19 g_drm_mode.vrefresh (@ 0xffffff800929eb9c-0xffffff800929ebb8: two sdiv); the
+	 * arm64 sdiv yields 0 for a zero divisor, which the guard reproduces without the C UB.
+	 */
+	if (g_drm_mode.htotal && g_drm_mode.vtotal)
+		vrefresh = g_drm_mode.clock * 1000 / g_drm_mode.htotal / g_drm_mode.vtotal;
+	if (vs_polarity)
+		g_drm_mode.flags |= DRM_MODE_FLAG_PVSYNC;
+
+	printk(KERN_DEFAULT "[zmh]%s, timing is:\n", __func__);
+	printk(KERN_DEFAULT "clock=%d\n", g_drm_mode.clock);
+	printk(KERN_DEFAULT "vrefresh=%d\n", vrefresh);
+	printk(KERN_DEFAULT "hdisplay=%d\n", g_drm_mode.hdisplay);
+	printk(KERN_DEFAULT "hsync_start=%d\n", g_drm_mode.hsync_start);
+	printk(KERN_DEFAULT "hsync_end=%d\n", g_drm_mode.hsync_end);
+	printk(KERN_DEFAULT "htotal=%d\n", g_drm_mode.htotal);
+	printk(KERN_DEFAULT "hs_polarity=%d\n", (int)hs_polarity);
+	printk(KERN_DEFAULT "vdisplay=%d\n", g_drm_mode.vdisplay);
+	printk(KERN_DEFAULT "vsync_start=%d\n", g_drm_mode.vsync_start);
+	printk(KERN_DEFAULT "vtotal=%d\n", g_drm_mode.vtotal);
+	printk(KERN_DEFAULT "vs_polarity=%d\n", (int)vs_polarity);
+
+	return 0;
+}
+__setup("drm_mode=", drm_mode_setup);
+#endif
+
 static const struct drm_display_mode dw_hdmi_default_modes[] = {
 	/* 4 - 1280x720@60Hz 16:9 */
 	{ DRM_MODE("1280x720", DRM_MODE_TYPE_DRIVER, 74250, 1280, 1390,
@@ -297,6 +508,9 @@ struct dw_hdmi {
 	bool force_logo;		/* force uboot hdmi output specific resolution */
 	bool force_kernel_output;	/* force kernel hdmi output specific resolution */
 	int force_output;		/* force hdmi/dvi output mode */
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+	bool nova_vendor_drm_mode;	/* nova,vendor-drm-mode: the V-series stock mode list */
+#endif
 
 	struct delayed_work work;
 	struct workqueue_struct *workqueue;
@@ -348,6 +562,9 @@ struct dw_hdmi {
 	bool update;
 	bool hdr2sdr;			/* from hdr to sdr */
 	bool cts_manual;
+	/* nova,hdmi-full-range: the sink is a board-internal receiver that takes the
+	 * pixels at full range (kernel/patches/0074). */
+	bool nova_full_range;
 };
 
 #define HDMI_IH_PHY_STAT0_RX_SENSE \
@@ -448,7 +665,7 @@ static void repo_hpd_event(struct work_struct *p_work)
 			if (hdmi->plat_data->set_ddc_io)
 				hdmi->plat_data->set_ddc_io(data, hdmi->hpd_state);
 #if IS_REACHABLE(CONFIG_DRM_DW_HDMI_CEC)
-			if (hdmi->cec_adap->devnode.registered)
+			if (hdmi->cec_adap && hdmi->cec_adap->devnode.registered)
 				cec_queue_pin_hpd_event(hdmi->cec_adap,
 							hdmi->hpd_state,
 							ktime_get());
@@ -1499,8 +1716,19 @@ static int is_color_space_conversion(struct dw_hdmi *hdmi)
 	is_input_rgb = hdmi_bus_fmt_is_rgb(hdmi_data->enc_in_bus_format);
 	is_output_rgb = hdmi_bus_fmt_is_rgb(hdmi_data->enc_out_bus_format);
 
+	/*
+	 * RGB in, RGB out needs the CSC only to compress full range to limited, and that is
+	 * decided by the quantization range this mode set chose (quant_range, from the
+	 * platform's get_quant_range), the way dw_hdmi_update_csc_coeffs and hdmi_config_AVI
+	 * decide it -- not by the CEA default alone. Testing rgb_limited_range here put the
+	 * CSC in the path with the identity matrix for an explicit FULL range at a CEA mode,
+	 * and left it out (no compression) for an explicit LIMITED range at an IT mode while
+	 * the AVI infoframe said limited (kernel/patches/0074).
+	 */
 	return (is_input_rgb != is_output_rgb) ||
-	       (is_input_rgb && is_output_rgb && hdmi_data->rgb_limited_range);
+	       (is_input_rgb && is_output_rgb &&
+		(hdmi_data->quant_range == HDMI_QUANTIZATION_RANGE_LIMITED ||
+		 (!hdmi_data->quant_range && hdmi_data->rgb_limited_range)));
 }
 
 static int is_color_space_decimation(struct dw_hdmi *hdmi)
@@ -2413,6 +2641,16 @@ static void hdmi_config_AVI(struct dw_hdmi *hdmi,
 		else
 			drm_hdmi_avi_infoframe_quant_range(&frame, connector, mode,
 							   hdmi->hdmi_data.quant_range);
+
+		/*
+		 * nova,hdmi-full-range: the sink is the board's own receiver, which takes the
+		 * pixels at full range whatever its EDID says. drm_hdmi_avi_infoframe_quant_range
+		 * writes Q = 0 ("default", i.e. limited at a CEA mode) for a full range the EDID
+		 * did not declare selectable, so say full explicitly (Q = 2) to match the pixels.
+		 */
+		if (hdmi->nova_full_range &&
+		    hdmi->hdmi_data.quant_range == HDMI_QUANTIZATION_RANGE_FULL)
+			frame.quantization_range = HDMI_QUANTIZATION_RANGE_FULL;
 	} else {
 		/*
 		 * When the quant_range value is set to default, since the YCC quantization
@@ -2755,6 +2993,22 @@ static void hdmi_av_composer(struct dw_hdmi *hdmi,
 		HDMI_FC_INVIDCONF_IN_I_P_INTERLACED :
 		HDMI_FC_INVIDCONF_IN_I_P_PROGRESSIVE;
 
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+	/*
+	 * hdmi_av_composer, inlined in dw_hdmi_setup @ 0xffffff8008675238-0xffffff800867527c:
+	 * the DVI/HDMI bit follows the last EDID probe (dw_hdmi_edid_sink_is_hdmi), not
+	 * hdmi->sink_is_hdmi, and the value is logged before the write. The format string
+	 * (@ 0xffffff800913e61c) has no newline; kept. nova,vendor-drm-mode boards only.
+	 */
+	if (hdmi->nova_vendor_drm_mode) {
+		inv_val |= dw_hdmi_edid_sink_is_hdmi ?
+			HDMI_FC_INVIDCONF_DVI_MODEZ_HDMI_MODE :
+			HDMI_FC_INVIDCONF_DVI_MODEZ_DVI_MODE;
+		printk(KERN_DEFAULT
+		       "write hdmi, hdmi:[%p], hdmi->sink_is_hdmi:[%u], offset:[%#x], val:[%#x]",
+		       hdmi, hdmi->sink_is_hdmi, HDMI_FC_INVIDCONF, inv_val);
+	} else
+#endif
 	inv_val |= hdmi->sink_is_hdmi ?
 		HDMI_FC_INVIDCONF_DVI_MODEZ_HDMI_MODE :
 		HDMI_FC_INVIDCONF_DVI_MODEZ_DVI_MODE;
@@ -3331,6 +3585,136 @@ static const struct drm_edid *dw_hdmi_edid_read(struct dw_hdmi *hdmi,
 	return drm_edid;
 }
 
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+/* checksumEDID @ 0xffffff8008677a80: the byte sum of one 128-byte EDID block. */
+static u8 checksum_edid(const u8 *block)
+{
+	u8 sum = 0;
+	int i;
+
+	for (i = 0; i < 128; i++)
+		sum += block[i];
+	return sum;
+}
+
+/*
+ * get_display_mode_from_block1 @ 0xffffff8008d8e6a0: 1 when EDID block 1 is a CEA-861 rev 3
+ * extension carrying the HDMI Forum HF-VSDB (OUI C4-5D-D8) or the HDMI 1.x VSDB (OUI 00-0C-03),
+ * else 0. A block whose checksum is wrong counts as HDMI (returns 1 straight after its log
+ * line). The rest is the vendor's own log of the block: its header flags and every SVD.
+ */
+static u8 get_display_mode_from_block1(const u8 *block)
+{
+	u8 sum = checksum_edid(block);
+	u8 dsptype = 0;
+	u8 dtd_offset, i;
+	int j, len;
+
+	if (sum) {
+		printk(KERN_DEFAULT "EDID Block 1 Correct Checksum should be %02X \n",
+		       (u8)(block[127] - sum));
+		return 1;
+	}
+	printk(KERN_DEFAULT "EDID Block 1 Corrected Checksum! \n");
+	printk(KERN_DEFAULT "tmp[0]:[%#x], tmp:[1]:[%#x]\n", block[0], block[1]);
+	if (block[0] != 0x02 || block[1] != 0x03)
+		goto end;
+
+	if (block[3] & 0x80)
+		printk(KERN_DEFAULT "underscan\n");
+	if (block[3] & 0x40)
+		printk(KERN_DEFAULT "Audio support\n");
+	if (block[3] & 0x20)
+		printk(KERN_DEFAULT "YCbCr 444\n");
+	if (block[3] & 0x10)
+		printk(KERN_DEFAULT "YCbCr 422\n");
+
+	/* The data block collection, byte 4 up to the DTD offset in byte 2 (u8 arithmetic). */
+	dtd_offset = block[2];
+	i = 4;
+	do {
+		const u8 *p = block + i;
+
+		len = p[0] & 0x1f;
+		switch (p[0] >> 5) {
+		case 2:		/* video data block */
+			for (j = 1; j <= len; j++)
+				printk(KERN_DEFAULT "SVD[%d]=%d\n", j, p[j]);
+			break;
+		case 3:		/* vendor-specific data block */
+			if (p[1] == 0xd8) {
+				if (p[2] == 0x5d && p[3] == 0xc4) {
+					printk(KERN_DEFAULT "HDMI 2.0 HF_VSDB\n");
+					dsptype = 1;
+				}
+			} else if (p[1] == 0x03 && p[2] == 0x0c && p[3] == 0x00) {
+				printk(KERN_DEFAULT "HDMI 1.0 VSDB\n");
+				dsptype = 1;
+			}
+			break;
+		}
+		i += len + 1;
+	} while (dtd_offset > i);
+end:
+	printk(KERN_DEFAULT "get_display_mode_from_block1 end, dsptype:[%u]\n", dsptype);
+	return dsptype;
+}
+
+/*
+ * The EDID sink-type probe the vendor inlines twice, in dw_hdmi_connector_detect
+ * (@ 0xffffff8008677b84-0xffffff8008677c78, from_detect) and dw_hdmi_connector_get_modes
+ * (@ 0xffffff8008677dc4-0xffffff8008677eb8): log the EDID, decide HDMI vs DVI from block 1,
+ * store it in hdmi->sink_is_hdmi and dw_hdmi_edid_sink_is_hdmi, and set FC_INVIDCONF's
+ * DVI/HDMI bit to match (the vendor's inlined regmap_read/regmap_write at
+ * HDMI_FC_INVIDCONF << reg_shift, i.e. hdmi_readb/hdmi_writeb). The two copies differ only in
+ * the first log line and in the "get display mode" line before block 1, which is detect's.
+ * The hex-dump line has no newline in the vendor's format string; kept.
+ */
+static void dw_hdmi_edid_sink_type(struct dw_hdmi *hdmi, const u8 *edid, bool from_detect)
+{
+	int len = (edid[126] + 1) << 7;
+	u8 dsptype, val;
+	int i;
+
+	if (from_detect)
+		printk(KERN_DEFAULT "connector detect printk edid len:[%u]\n", len);
+	else
+		printk(KERN_DEFAULT "printk edid len:[%u]\n", len);
+	for (i = 0; i < (edid[126] + 1) << 7; i += 16) {
+		const u8 *b = edid + i;
+
+		if (len <= i + 15)
+			printk(KERN_DEFAULT "edid len is error\n");
+		printk(KERN_DEFAULT
+		       "%#x %#x %#x %#x %#x %#x %#x %#x %#x %#x %#x %#x %#x %#x %#x %#x",
+		       b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+		       b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+	}
+	printk(KERN_DEFAULT "edid end\n");
+
+	if (!edid[126]) {
+		printk(KERN_DEFAULT "no block1, dvi-mode\n");
+		dsptype = 0;
+	} else {
+		if (from_detect)
+			printk(KERN_DEFAULT "get display mode\n");
+		dsptype = get_display_mode_from_block1(edid + 128);
+	}
+	printk(KERN_DEFAULT "dsp type:[%u]\n", dsptype);
+
+	hdmi->sink_is_hdmi = dsptype == 1;
+	dw_hdmi_edid_sink_is_hdmi = hdmi->sink_is_hdmi;
+
+	val = hdmi_readb(hdmi, HDMI_FC_INVIDCONF);
+	val = (val & ~HDMI_FC_INVIDCONF_DVI_MODEZ_HDMI_MODE) |
+	      (hdmi->sink_is_hdmi ? HDMI_FC_INVIDCONF_DVI_MODEZ_HDMI_MODE : 0);
+	printk(KERN_DEFAULT
+	       "set to hdmi reg,hdmi:[%p], hdmi->sink_is_hdmi:[%u], offset:[%#x], val:[%#x]\n",
+	       hdmi, hdmi->sink_is_hdmi, HDMI_FC_INVIDCONF, val);
+	hdmi_writeb(hdmi, val, HDMI_FC_INVIDCONF);
+}
+#endif
+
 /* -----------------------------------------------------------------------------
  * DRM Connector Operations
  */
@@ -3340,7 +3724,37 @@ dw_hdmi_connector_detect(struct drm_connector *connector, bool force)
 {
 	struct dw_hdmi *hdmi = container_of(connector, struct dw_hdmi,
 					     connector);
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+	enum drm_connector_status result;
+	const struct drm_edid *drm_edid;
+
+	if (!hdmi->nova_vendor_drm_mode)
+		return dw_hdmi_detect(hdmi);
+	result = dw_hdmi_detect(hdmi);
+
+	/*
+	 * dw_hdmi_connector_detect @ 0xffffff8008677ac4: after read_hpd and the extcon update,
+	 * log the result and, when connected, run the EDID sink-type probe (drm_get_edid on
+	 * hdmi->ddc, @ 0xffffff8008677b84; "get edid fail!" without one). The EDID is read
+	 * without touching the connector's EDID property or display info, as 4.19 drm_get_edid
+	 * did (@ 0xffffff800860c508 calls neither): drm_edid_read_ddc.
+	 */
+	printk(KERN_DEFAULT
+	       "hdmi connector detect after read_hpd: result:[%u], connector_status_connected:[%u] \n",
+	       result, connector_status_connected);
+	if (result != connector_status_connected)
+		return result;
+	drm_edid = drm_edid_read_ddc(connector, hdmi->ddc);
+	if (!drm_edid) {
+		printk(KERN_DEFAULT "get edid fail!\n");
+		return result;
+	}
+	dw_hdmi_edid_sink_type(hdmi, (const u8 *)drm_edid_raw(drm_edid), true);
+	drm_edid_free(drm_edid);
+	return result;
+#else
 	return dw_hdmi_detect(hdmi);
+#endif
 }
 
 static int
@@ -3372,6 +3786,119 @@ dw_hdmi_update_hdr_property(struct drm_connector *connector)
 	return ret;
 }
 
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+/*
+ * The V-series stock dw_hdmi_connector_get_modes @ 0xffffff8008677d70, for a board whose HDMI
+ * node has nova,vendor-drm-mode (dw_hdmi_connector_get_modes below hands over to it first).
+ * The EDID, when there is one, only runs the sink-type probe; the modes are always a vendor
+ * table: dw_hdmi_nova_default_modes with the drm_mode= timing in entry 0 when
+ * g_drm_mode.clock > 0 (7 modes), else dw_hdmi_nova_kseries_modes (8, 3840x2160 first). It
+ * never refreshes the HDR property (the vendor has no call), so dw_hdmi_update_hdr_property is
+ * not called on this path. Entry 0 is the preferred mode. The display info the vendor then forces
+ * (@ 0xffffff8008677fe0-0xffffff8008678008, 4.19 struct drm_connector offsets resolved against
+ * drm_reset_display_info @ 0xffffff800860cb00): hdmi.scdc supported / read_request /
+ * scrambling.supported / scrambling.low_rates all true (one 0x01010101 store at +288),
+ * color_formats 0 (+256), max_tmds_clock 594000 (+280), edid_hdmi_dc_modes 0 (+286; 6.12 splits
+ * it into the rgb444 and ycbcr444 fields) and hdmi.y420_dc_modes 0 (+336). "failed to get
+ * edid" is logged on every call, EDID or not (@ 0xffffff800867800c), as on the stock unit
+ * (probe_raw.txt:5322 and :5484-5545, the second after a 256-byte EDID was read).
+ */
+static int dw_hdmi_nova_vseries_get_modes(struct drm_connector *connector)
+{
+	struct dw_hdmi *hdmi = container_of(connector, struct dw_hdmi,
+					     connector);
+	struct hdr_static_metadata *metedata =
+			&connector->hdr_sink_metadata.hdmi_type1;
+	struct drm_display_info *info = &connector->display_info;
+	const struct drm_display_mode *ptr;
+	const struct drm_edid *drm_edid;
+	struct drm_display_mode *mode;
+	int i, num, ret = 0;
+
+	/* the 8-byte clear @ 0xffffff8008677db0, the BSP's HDR sink metadata clear */
+	memset(metedata, 0, sizeof(*metedata));
+
+	/* no DDC: no modes at all (@ 0xffffff8008677db8, returns 0) */
+	if (!hdmi->ddc)
+		return 0;
+
+	drm_edid = drm_edid_read_ddc(connector, hdmi->ddc);
+	if (drm_edid) {
+		dw_hdmi_edid_sink_type(hdmi, (const u8 *)drm_edid_raw(drm_edid), false);
+		drm_edid_free(drm_edid);
+	}
+
+	hdmi->sink_has_audio = true;			/* +2857 @ 0xffffff8008677ec8 */
+	hdmi->support_hdmi = true;			/* +2859 @ 0xffffff8008677ecc */
+	num = g_drm_mode.clock > 0 ? ARRAY_SIZE(dw_hdmi_nova_default_modes) :
+				     ARRAY_SIZE(dw_hdmi_nova_kseries_modes);
+	/*
+	 * +3241 cleared @ 0xffffff8008677f0c: the rgb_quant_range_selectable that dw_hdmi_setup
+	 * hands drm_hdmi_avi_infoframe_quant_range (@ 0xffffff8008675814); 6.12 keeps it in the
+	 * display info, where that helper reads it.
+	 */
+	info->rgb_quant_range_selectable = false;
+
+	for (i = 0; i < num; i++) {
+		if (g_drm_mode.clock > 0) {
+			ptr = &dw_hdmi_nova_default_modes[i];
+			printk(KERN_DEFAULT
+			       "[zmh]:  g_drm_mode.clock(%lu) is valid. set dw_hdmi_default_modes.\n",
+			       (unsigned long)(u32)g_drm_mode.clock);
+			if (!i) {
+				struct drm_display_mode *dst = &dw_hdmi_nova_default_modes[0];
+
+				snprintf(dst->name, DRM_DISPLAY_MODE_LEN, "%dx%d",
+					 g_drm_mode.hdisplay, g_drm_mode.vdisplay);
+				dst->htotal = g_drm_mode.htotal;
+				dst->hskew = g_drm_mode.hskew;
+				dst->vdisplay = g_drm_mode.vdisplay;
+				dst->vsync_start = g_drm_mode.vsync_start;
+				dst->clock = g_drm_mode.clock;
+				dst->hdisplay = g_drm_mode.hdisplay;
+				dst->vsync_end = g_drm_mode.vsync_end;
+				dst->vtotal = g_drm_mode.vtotal;
+				dst->flags = g_drm_mode.flags;
+				dst->hsync_start = g_drm_mode.hsync_start;
+				dst->hsync_end = g_drm_mode.hsync_end;
+			}
+		} else {
+			/* the vendor's format says "is valid" here too */
+			ptr = &dw_hdmi_nova_kseries_modes[i];
+			printk(KERN_DEFAULT
+			       "[zmh]:  g_drm_mode.clock(%lu) is valid. set dw_hdmi_kseries_modes.\n",
+			       (unsigned long)(u32)g_drm_mode.clock);
+		}
+
+		mode = drm_mode_duplicate(connector->dev, ptr);
+		if (!mode)
+			continue;
+		if (!i) {
+			mode->type = DRM_MODE_TYPE_PREFERRED;
+			mode->picture_aspect_ratio = HDMI_PICTURE_ASPECT_NONE;
+		}
+		ret++;
+		drm_mode_probed_add(connector, mode);
+	}
+
+	info->hdmi.scdc.supported = true;
+	info->hdmi.scdc.read_request = true;
+	info->hdmi.scdc.scrambling.supported = true;
+	info->hdmi.scdc.scrambling.low_rates = true;
+	info->color_formats = 0;
+	info->max_tmds_clock = 594000;
+	info->edid_hdmi_rgb444_dc_modes = 0;
+	info->edid_hdmi_ycbcr444_dc_modes = 0;
+	info->hdmi.y420_dc_modes = 0;
+	dev_info(hdmi->dev, "failed to get edid\n");
+
+	/* force_output 1 / 2 / otherwise support_hdmi (+2864, @ 0xffffff8008678010-0xffffff80086780f0) */
+	dw_hdmi_check_output_type_changed(hdmi);
+
+	return ret;
+}
+#endif
+
 static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
 {
 	struct dw_hdmi *hdmi = container_of(connector, struct dw_hdmi,
@@ -3387,6 +3914,10 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
 	int i, ret = 0;
 	int ext_block_num;
 
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+	if (hdmi->nova_vendor_drm_mode)
+		return dw_hdmi_nova_vseries_get_modes(connector);
+#endif
 	if (hdmi->force_kernel_output) {
 		mode = hdmi->plat_data->get_force_timing(data);
 		hdmi->support_hdmi = true;
@@ -5229,6 +5760,15 @@ struct dw_hdmi *dw_hdmi_probe(struct platform_device *pdev,
 	hdmi->phy_mask = (u8)~(HDMI_PHY_HPD | HDMI_PHY_RX_SENSE);
 	hdmi->mc_clkdis = 0x7f;
 	hdmi->last_connector_result = connector_status_disconnected;
+#ifdef CONFIG_DRM_DW_HDMI_NOVA_VSERIES
+	/*
+	 * nova,vendor-drm-mode: this HDMI output behaves as the NovaStar V-series stock kernel's
+	 * (the drm_mode= timing, the vendor mode tables, the EDID sink-type probe; see
+	 * drm_mode_setup and dw_hdmi_nova_vseries_get_modes). A board whose DT leaves it out
+	 * keeps the stock 6.12 driver, so one kernel serves both.
+	 */
+	hdmi->nova_vendor_drm_mode = of_property_read_bool(np, "nova,vendor-drm-mode");
+#endif
 
 	mutex_init(&hdmi->mutex);
 	mutex_init(&hdmi->audio_mutex);
@@ -5460,6 +6000,7 @@ struct dw_hdmi *dw_hdmi_probe(struct platform_device *pdev,
 	config3 = hdmi_readb(hdmi, HDMI_CONFIG3_ID);
 
 	hdmi->cts_manual = of_property_read_bool(np, "rockchip,cts-manual");
+	hdmi->nova_full_range = of_property_read_bool(np, "nova,hdmi-full-range");
 
 	if (iores && config3 & HDMI_CONFIG3_AHBAUDDMA) {
 		struct dw_hdmi_audio_data audio;
@@ -5518,7 +6059,7 @@ struct dw_hdmi *dw_hdmi_probe(struct platform_device *pdev,
 		cec.ops = &dw_hdmi_cec_ops;
 		cec.irq = irq;
 
-		irq = platform_get_irq(pdev, 1);
+		irq = platform_get_irq_optional(pdev, 1);
 		if (irq < 0)
 			dev_dbg(hdmi->dev, "can't get cec wake up irq\n");
 

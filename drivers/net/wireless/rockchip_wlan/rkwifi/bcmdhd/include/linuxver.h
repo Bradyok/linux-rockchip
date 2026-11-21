@@ -673,7 +673,7 @@ extern char* dhd_dbg_get_system_timestamp(void);
 #define DHD_LOG_PREFIXS DHD_LOG_PREFIX" "
 #ifdef DHD_DEBUG
 #ifndef CUSTOM_PREFIX
-#define	printf_thr(fmt, args...)	printk(PERCENT_S DHD_LOG_PREFIXS fmt, PRINTF_SYSTEM_TIME, ## args)
+#define	printf_thr(fmt, args...)	printk(KERN_INFO PERCENT_S DHD_LOG_PREFIXS fmt, PRINTF_SYSTEM_TIME, ## args)
 #define DBG_THR(args)		do {printf_thr args;} while (0)
 #else
 extern char* osl_get_rtctime(void);

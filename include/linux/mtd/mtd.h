@@ -471,6 +471,23 @@ static inline struct device_node *mtd_get_of_node(struct mtd_info *mtd)
 	return dev_of_node(&mtd->dev);
 }
 
+#ifdef CONFIG_MTD_SPI_NOR_NOVA_NSERIES
+/*
+ * Whether this board numbers its MTDs the NovaStar N-series way: its device tree carries the
+ * vendor u32 "mtdindex" on a flash node (models/nseries/dts/rk3566-nseries-lp4x-v10.dtsi, the
+ * only NovaOS tree that does). The N-series stock kernel's spi-nor and MTD-core changes
+ * (kernel/patches/0033) act only then, so one kernel keeps every other board's numbering and
+ * "sfc_nor" names as stock 6.12 has them.
+ */
+static inline bool mtd_nova_mtdindex_board(void)
+{
+	struct device_node *np = of_find_node_with_property(NULL, "mtdindex");
+
+	of_node_put(np);
+	return np != NULL;
+}
+#endif
+
 static inline u32 mtd_oobavail(struct mtd_info *mtd, struct mtd_oob_ops *ops)
 {
 	return ops->mode == MTD_OPS_AUTO_OOB ? mtd->oobavail : mtd->oobsize;

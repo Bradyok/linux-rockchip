@@ -28,6 +28,8 @@
 #include <linux/firmware.h>
 #include <crypto/hash.h>
 #include <linux/usb/r8152.h>
+#include <linux/of.h>
+#include <linux/soc/rockchip/rk_vendor_storage.h>
 #include <net/gso.h>
 
 /* Information for net-next */
@@ -958,6 +960,10 @@ struct r8152 {
 	u8 version;
 	u8 duplex;
 	u8 autoneg;
+#ifdef CONFIG_USB_RTL8152_NOVA_NSERIES
+	/* the board's DT root has nova,r8152-rtl-adv (rtl8152_nova_nseries) */
+	bool nova_rtl_adv;
+#endif
 
 	unsigned int reg_access_reset_count;
 };
@@ -1608,6 +1614,17 @@ static void ocp_reg_write(struct r8152 *tp, u16 addr, u16 data)
 
 static inline void r8152_mdio_write(struct r8152 *tp, u32 reg_addr, u32 value)
 {
+#ifdef CONFIG_USB_RTL8152_NOVA_NSERIES
+	/* The N-series stock kernel's r8152_mdio_write logs every PHY write before making it:
+	 * printk("r8152_mdio_write reg:[%#x], value:[%#x]\n", reg_addr, value), format
+	 * @ 0xffffff80091bc9c2 with no log level, then ocp_reg_write(tp, OCP_BASE_MII +
+	 * reg_addr * 2, value). It is inlined at each caller; e.g. write_mii_word
+	 * @ 0xffffff80087fdd30, r8152b_enable_fc @ 0xffffff8008dc0ec8 (reg 4). On an N-series
+	 * board only (tp->nova_rtl_adv, rtl8152_nova_nseries).
+	 */
+	if (tp->nova_rtl_adv)
+		printk("r8152_mdio_write reg:[%#x], value:[%#x]\n", reg_addr, value);
+#endif
 	ocp_reg_write(tp, OCP_BASE_MII + reg_addr * 2, value);
 }
 
@@ -1784,12 +1801,122 @@ amacout:
 	return ret;
 }
 
+/* NovaStar TU carriers: the stock 4.19 kernel's r8152 takes this NIC's MAC from Rockchip vendor
+ * storage (id LAN_MAC_ID = 3, 12 bytes, slot 1 = bytes 6..11). The on-board RTL8153's own address
+ * is empty (this driver logs "Invalid ether addr 00:00:00:00:00:00" on the unit), so without the
+ * slot the control port comes up with a random MAC every boot instead of the factory one.
+ * In the stock Image: determine_ethernet_addr @ 0xffffff800884da64,
+ * rtl8152_probe @ 0xffffff8008832750 (+0x2f3c..+0x2fc8), rtl8152_reset_resume @
+ * 0xffffff80088335f0 (+0x3648..+0x36d4).
+ * The stock code has no board gate.
+ * That Image (sha256 6c0deb14...7923d98fbb) is the kernel of both TU carriers: the TU15
+ * and the TU20 Pro, whose boot_b
+ * kernel hashes the same. A stock TU20 Pro's eth0 is this
+ * driver on usb 6-1 and carries vendor storage id 3 slot 1 (read on two units:
+ * /sys/class/devinfo/info3/value ends with the six bytes of eth0's MAC on both).
+ * This kernel is shared with boards whose stock r8152 has not been read, so
+ * the vendor path runs on those two machine compatibles
+ * (models/tu15/dts/rk3566-tu15-lp4x-v10-linux.dts,
+ * models/tu20pro/dts/rk3566-tu20pro-lp4x-v10-linux.dts) and nowhere else. */
+static bool nova_tu_vendor_mac(void)
+{
+	return of_machine_is_compatible("rockchip,rk3566-TU15-v1") ||
+	       of_machine_is_compatible("rockchip,rk3566-MeeBox210-v1");
+}
+
+/* rtl8152_probe / rtl8152_reset_resume, after determine_ethernet_addr: an rk_vendor_read of id 3
+ * that returned > 0 bytes with slot 1 neither multicast nor zero replaces the address. */
+static void nova_tu_vendor_mac_override(struct sockaddr *sa)
+{
+	u8 buf[12] = { 0 };
+	int ret;
+
+	if (!nova_tu_vendor_mac())
+		return;
+	ret = rk_vendor_read(LAN_MAC_ID, buf, sizeof(buf));
+	if (ret > 0 && !is_multicast_ether_addr(buf + 6) && !is_zero_ether_addr(buf + 6))
+		ether_addr_copy(sa->sa_data, buf + 6);
+}
+
+/* The YC-SM1011 panel (RK3576): its stock 6.1 kernel's
+ * r8152 takes the USB NIC's address from Rockchip vendor storage when the device tree asks for it,
+ * through three properties its board DT sets on the root node:
+ *     rockchip,r8152-use-vendor-storage-mac      fall back to vendor storage when the NIC gives no
+ *                                                valid address of its own
+ *     rockchip,r8152-force-vendor-storage-mac    try vendor storage FIRST (implies -use-)
+ *     rockchip,r8152-vendor-mac-slot = <n>       which 6-byte slot of LAN_MAC_ID (0 or 1)
+ * In the shipping Image (the stock boot.img FIT kernel; file offsets):
+ *   0xb5fae8  the property reader: each name looked up on the given node; -force- sets both
+ *             flags; the slot read as one u32 and left unchanged when absent;
+ *   0xb5f248  the vendor-storage read: rk_vendor_read(LAN_MAC_ID, buf, 12) must return 12 (else
+ *             -ENODEV); the slot's 6 bytes must be neither multicast nor zero (else -EINVAL); they
+ *             become the address and "Using vendor_storage MAC slot%d %pM" is logged (netif_info,
+ *             probe);
+ *   0xb6019c  determine_ethernet_addr: the root node's properties first, then the USB device's own
+ *             node's; a slot above 1 is slot 0; with -force- the vendor slot is tried before
+ *             anything else, and a failure is logged ("Force vendor_storage MAC enabled but read
+ *             failed (%d)", netif_warn) and falls through; with -use- the vendor slot replaces an
+ *             address the normal sources could not read or read invalid.
+ * The live panel logs "r8152 1-1.3:1.0 (unnamed net_device) (uninitialized): Using vendor_storage
+ * MAC slot0 72:0d:4a:9b:22:43" (2026-10-06). A board whose DT names none of the properties sees
+ * no change. */
+struct nova_r8152_vs {
+	bool use;
+	bool force;
+	u32 slot;
+};
+
+static void nova_r8152_vs_props(struct device_node *np, struct nova_r8152_vs *vs)
+{
+	if (!np)
+		return;
+	if (of_property_read_bool(np, "rockchip,r8152-use-vendor-storage-mac"))
+		vs->use = true;
+	if (of_property_read_bool(np, "rockchip,r8152-force-vendor-storage-mac")) {
+		vs->use = true;
+		vs->force = true;
+	}
+	of_property_read_u32(np, "rockchip,r8152-vendor-mac-slot", &vs->slot);
+}
+
+static int nova_r8152_vs_mac(struct r8152 *tp, struct sockaddr *sa, u32 slot)
+{
+	u8 buf[12] = { 0 };
+	u8 *mac = buf + slot * ETH_ALEN;
+
+	if (rk_vendor_read(LAN_MAC_ID, buf, sizeof(buf)) != sizeof(buf))
+		return -ENODEV;
+	if (is_multicast_ether_addr(mac) || is_zero_ether_addr(mac))
+		return -EINVAL;
+	ether_addr_copy(sa->sa_data, mac);
+	netif_info(tp, probe, tp->netdev, "Using vendor_storage MAC slot%d %pM\n", slot,
+		   sa->sa_data);
+	return 0;
+}
+
 static int determine_ethernet_addr(struct r8152 *tp, struct sockaddr *sa)
 {
 	struct net_device *dev = tp->netdev;
+	struct nova_r8152_vs vs = { 0 };
+	struct device_node *root;
 	int ret;
 
+	root = of_find_node_by_path("/");
+	nova_r8152_vs_props(root, &vs);
+	of_node_put(root);
+	nova_r8152_vs_props(tp->udev->dev.of_node, &vs);
+	if (vs.slot > 1)
+		vs.slot = 0;
+
 	sa->sa_family = dev->type;
+
+	if (vs.force) {
+		ret = nova_r8152_vs_mac(tp, sa, vs.slot);
+		if (!ret)
+			return 0;
+		netif_warn(tp, probe, dev,
+			   "Force vendor_storage MAC enabled but read failed (%d)\n", ret);
+	}
 
 	ret = eth_platform_get_mac_address(&tp->udev->dev, sa->sa_data);
 	if (ret < 0) {
@@ -1806,8 +1933,37 @@ static int determine_ethernet_addr(struct r8152 *tp, struct sockaddr *sa)
 		}
 	}
 
+	/* determine_ethernet_addr @ 0xb6019c (SM1011): -use- puts the vendor slot in place of an
+	 * address the sources above could not read, or read invalid; when that fails too, the
+	 * original result goes on as before. */
+	if (vs.use && (ret < 0 || !is_valid_ether_addr(sa->sa_data)) &&
+	    !nova_r8152_vs_mac(tp, sa, vs.slot))
+		return 0;
+
 	if (ret < 0) {
 		netif_err(tp, probe, dev, "Get ether addr fail\n");
+	} else if (!is_valid_ether_addr(sa->sa_data) && nova_tu_vendor_mac()) {
+		/* determine_ethernet_addr @ 0xffffff800884da64, the invalid-address branch: slot 1 of
+		 * vendor id 3, or a random address when the read is short or the slot is zero; either
+		 * way byte 0 loses its two low bits before use (@0x...dbfc). */
+		u8 buf[12] = { 0 };
+
+		netif_err(tp, probe, dev, "Invalid ether addr %pM\n",
+			  sa->sa_data);
+		ret = rk_vendor_read(LAN_MAC_ID, buf, sizeof(buf));
+		if (ret != sizeof(buf) || is_zero_ether_addr(buf + 6)) {
+			dev_err(&tp->udev->dev, "%s: rk_vendor_read eth mac address failed (%d)",
+				__func__, ret);
+			get_random_bytes(buf + 6, ETH_ALEN);
+			buf[6] = (buf[6] & 0xfc) | 2;
+			dev_err(&tp->udev->dev,
+				"%s: generate random eth mac address: %02x:%02x:%02x:%02x:%02x:%02x",
+				__func__, buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]);
+		}
+		buf[6] &= 0xfc;
+		ether_addr_copy(sa->sa_data, buf + 6);
+		netif_info(tp, probe, dev, "eth1 addr %pM\n", sa->sa_data);
+		return 0;
 	} else if (!is_valid_ether_addr(sa->sa_data)) {
 		netif_err(tp, probe, dev, "Invalid ether addr %pM\n",
 			  sa->sa_data);
@@ -1830,6 +1986,8 @@ static int set_ethernet_addr(struct r8152 *tp, bool in_resume)
 	ret = determine_ethernet_addr(tp, &sa);
 	if (ret < 0)
 		return ret;
+
+	nova_tu_vendor_mac_override(&sa);
 
 	if (tp->version == RTL_VER_01)
 		eth_hw_addr_set(dev, sa.sa_data);
@@ -7232,6 +7390,24 @@ static void r8153_init(struct r8152 *tp)
 	}
 }
 
+/* NovaStar TU carriers: the stock kernel's PLA_LEDSEL value for the RTL8153 control port.
+ * Stock Image 4.19.219-ab377 @0xffffff800883d9f4 (mov w8, #0x87) written at
+ * @0xffffff800883da2c with wIndex 0x133 (MCU_TYPE_PLA | BYTE_EN_WORD = the low half of the
+ * dword at 0xdd90). Read back as 0x0087 from a stock TU20 Pro whose LEDs are lit, against
+ * 0x0ca9 on a NovaOS TU15 whose LEDs are dark. mainline never writes this register. The stock
+ * write is unconditional, and that Image is the kernel of both TU carriers (see
+ * nova_tu_vendor_mac), so it runs on both machine compatibles.
+ */
+#define NOVA_TU_LEDSEL	0x0087
+
+static void nova_tu_vendor_ledsel(struct r8152 *tp)
+{
+	if (!nova_tu_vendor_mac())
+		return;
+
+	ocp_write_word(tp, MCU_TYPE_PLA, PLA_LEDSEL, NOVA_TU_LEDSEL);
+}
+
 static void r8153b_init(struct r8152 *tp)
 {
 	u32 ocp_data;
@@ -7264,6 +7440,8 @@ static void r8153b_init(struct r8152 *tp)
 	data = r8153_phy_status(tp, PHY_STAT_LAN_ON);
 
 	r8153_u2p3en(tp, false);
+
+	nova_tu_vendor_ledsel(tp);
 
 	/* MSC timer = 0xfff * 8ms = 32760 ms */
 	ocp_write_word(tp, MCU_TYPE_USB, USB_MSC_TIMER, 0x0fff);
@@ -9803,6 +9981,113 @@ static bool rtl8152_supports_lenovo_macpassthru(struct usb_device *udev)
 	return 0;
 }
 
+#ifdef CONFIG_USB_RTL8152_NOVA_NSERIES
+/*
+ * The N-series (N10/N20/P10/P20 V2.0.0) stock kernel's rtl_adv/rtl8152_reinit, written by the
+ * stock /usr/process/oem/phyrst.sh (md5 635023079c36531399f0dc8d768b0fe4) when dhcpcd still
+ * fails after the PF025 reset on GPIO 139. Stock 4.19.193 Image boot/kernel md5
+ * 0b13713d83fffaaeecdbd126a677231d, vmlinux-to-elf base 0xffffff8008080000.
+ *
+ * Every rtl8152_reinit_store serialises on one file-scope mutex (@ 0xffffff8009500c08:
+ * mutex_trylock at +0xc8, mutex_unlock at +0x11c).
+ */
+static DEFINE_MUTEX(rtl8152_reinit_lock);
+
+/*
+ * One kernel for every NovaStar board: the N-series
+ * additions -- rtl_adv/rtl8152_reinit and the r8152_mdio_write log -- act only on a board whose
+ * DT root node has nova,r8152-rtl-adv (models/nseries/dts/rk3566-nseries-lp4x-v10.dtsi). The
+ * TU15's and TU20 Pro's LAN chip is an r8152 too and keeps the plain driver. A property, not a
+ * machine compatible: the N-series, V-series and COEX trees all keep the EVB2's
+ * "rockchip,rk3566-evb2-lp4x-v10". Read once per adapter, at probe, into tp->nova_rtl_adv.
+ */
+static bool rtl8152_nova_nseries(void)
+{
+	return of_property_read_bool(of_root, "nova,r8152-rtl-adv");
+}
+
+/*
+ * rtl8152_reinit_store @ 0xffffff80087fc7a4. capable(0x15 = CAP_SYS_ADMIN) or -1; the value
+ * must parse as the decimal int 1 (-EINVAL); an unplugged adapter (tp->flags bit 0) is
+ * -ENODEV; a second writer while one runs is -EBUSY (mutex_trylock); then, only while the
+ * interface is running (netdev->state bit 0, __LINK_STATE_START), dev_close + dev_open under
+ * rtnl_lock. The messages are the vendor's netif_err/netif_info(tp, drv, ...) strings
+ * @ 0xffffff80091bc83e / 867 / 889 / 8ad / 8ce / 8ee. Returns count, or dev_open's error.
+ */
+static ssize_t rtl8152_reinit_store(struct device *dev, struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct net_device *netdev = to_net_dev(dev);
+	struct r8152 *tp = netdev_priv(netdev);
+	int val, ret;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -1;
+
+	if (kstrtoint(buf, 10, &val) < 0 || val != 1) {
+		netif_err(tp, drv, netdev, "rtl8152_reinit: only value 1 is allowed\n");
+		return -EINVAL;
+	}
+
+	if (test_bit(RTL8152_INACCESSIBLE, &tp->flags)) {
+		netif_err(tp, drv, netdev, "rtl8152_reinit: device unplugged\n");
+		return -ENODEV;
+	}
+
+	if (!mutex_trylock(&rtl8152_reinit_lock)) {
+		netif_err(tp, drv, netdev, "rtl8152_reinit: reinit in progress\n");
+		return -EBUSY;
+	}
+
+	netif_info(tp, drv, netdev, "rtl8152_reinit: re-initializing\n");
+
+	ret = 0;
+	if (netif_running(netdev)) {
+		rtnl_lock();
+		dev_close(netdev);
+		/* the 4.19 dev_open(dev); 6.12's takes an extack, which the stock call has none of */
+		ret = dev_open(netdev, NULL);
+		rtnl_unlock();
+		if (ret)
+			netif_err(tp, drv, netdev, "rtl8152_reinit: open failed %d\n", ret);
+		else
+			netif_info(tp, drv, netdev, "rtl8152_reinit: done\n");
+	}
+
+	mutex_unlock(&rtl8152_reinit_lock);
+
+	return ret ? ret : count;
+}
+
+/* rtl8152_reinit_show @ 0xffffff80087fc958: strcpy(buf, "0\n" @ 0xffffff8009119664), 2 */
+static ssize_t rtl8152_reinit_show(struct device *dev, struct device_attribute *attr,
+				   char *buf)
+{
+	strcpy(buf, "0\n");
+	return 2;
+}
+
+/* struct device_attribute @ 0xffffff8009504310: "rtl8152_reinit", mode 0644 */
+static DEVICE_ATTR_RW(rtl8152_reinit);
+
+/*
+ * The stock "rtl_adv" group (struct attribute_group @ 0xffffff8009500c40, attrs
+ * @ 0xffffff80095042e0). Stock lists rx_copybreak, sg_en, fc_pause_on and fc_pause_off ahead
+ * of rtl8152_reinit; those four are the Realtek out-of-tree r8152 v2.15.0 the stock kernel
+ * builds (its probe logs "v2.15.0 (2021/04/15)", @ 0xffffff80091bc90e) and have no
+ * counterpart in this in-tree driver, so the group carries the NovaStar attribute.
+ */
+static struct attribute *rtl_adv_attrs[] = {
+	&dev_attr_rtl8152_reinit.attr,
+	NULL
+};
+
+static const struct attribute_group rtl_adv_grp = {
+	.name	= "rtl_adv",
+	.attrs	= rtl_adv_attrs,
+};
+#endif /* CONFIG_USB_RTL8152_NOVA_NSERIES */
+
 static int rtl8152_probe_once(struct usb_interface *intf,
 			      const struct usb_device_id *id, u8 version)
 {
@@ -9831,6 +10116,10 @@ static int rtl8152_probe_once(struct usb_interface *intf,
 	tp->netdev = netdev;
 	tp->intf = intf;
 	tp->version = version;
+#ifdef CONFIG_USB_RTL8152_NOVA_NSERIES
+	/* before the first r8152_mdio_write (rtl_ops.init below) */
+	tp->nova_rtl_adv = rtl8152_nova_nseries();
+#endif
 
 	tp->pipe_ctrl_in = usb_rcvctrlpipe(udev, 0);
 	tp->pipe_ctrl_out = usb_sndctrlpipe(udev, 0);
@@ -9987,6 +10276,21 @@ static int rtl8152_probe_once(struct usb_interface *intf,
 	set_bit(PROBED_WITH_NO_ERRORS, &tp->flags);
 	netif_info(tp, probe, netdev, "%s\n", DRIVER_VERSION);
 
+#ifdef CONFIG_USB_RTL8152_NOVA_NSERIES
+	/*
+	 * Stock rtl8152_probe (@ 0xffffff8008801560) creates the group on the netdev's kobject as
+	 * its last step, after register_netdev and the version print; a failure logs
+	 * "creat rtk_adv_grp fail" (@ 0xffffff80091bcb8f, netif_err probe) and unregisters.
+	 */
+	if (tp->nova_rtl_adv) {
+		ret = sysfs_create_group(&netdev->dev.kobj, &rtl_adv_grp);
+		if (ret < 0) {
+			netif_err(tp, probe, netdev, "creat rtk_adv_grp fail\n");
+			goto out2;
+		}
+	}
+#endif
+
 	return 0;
 
 out2:
@@ -10046,6 +10350,11 @@ static void rtl8152_disconnect(struct usb_interface *intf)
 
 	usb_set_intfdata(intf, NULL);
 	if (tp) {
+#ifdef CONFIG_USB_RTL8152_NOVA_NSERIES
+		/* stock rtl8152_disconnect (@ 0xffffff80087fe498 +0x28) removes it first */
+		if (tp->nova_rtl_adv)
+			sysfs_remove_group(&tp->netdev->dev.kobj, &rtl_adv_grp);
+#endif
 		rtl_set_unplug(tp);
 
 		unregister_netdev(tp->netdev);

@@ -22,6 +22,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 #include <linux/pm_runtime.h>
+#include <linux/rtnetlink.h>
 #include <linux/soc/rockchip/rk_vendor_storage.h>
 #include <soc/rockchip/rockchip_csu.h>
 #include "stmmac_platform.h"
@@ -3282,6 +3283,9 @@ static int rk_gmac_phy_power_on(struct rk_priv_data *bsp_priv, bool enable)
 	int ret;
 	struct device *dev = &bsp_priv->pdev->dev;
 
+	if (!ldo)
+		return 0;
+
 	if (enable) {
 		ret = regulator_enable(ldo);
 		if (ret)
@@ -3329,11 +3333,20 @@ static struct rk_priv_data *rk_gmac_setup(struct platform_device *pdev,
 		}
 	}
 
-	bsp_priv->regulator = devm_regulator_get(dev, "phy");
+	/*
+	 * phy-supply is optional: a PHY on an always-on rail has no switchable supply to
+	 * name (the 4.19 BSP's dwmac-rk.c took it with devm_regulator_get_optional too).
+	 * A plain devm_regulator_get() hands such a board a dummy regulator with a
+	 * "supply phy not found" warning.
+	 */
+	bsp_priv->regulator = devm_regulator_get_optional(dev, "phy");
 	if (IS_ERR(bsp_priv->regulator)) {
 		ret = PTR_ERR(bsp_priv->regulator);
-		dev_err_probe(dev, ret, "failed to get phy regulator\n");
-		return ERR_PTR(ret);
+		if (ret != -ENODEV) {
+			dev_err_probe(dev, ret, "failed to get phy regulator\n");
+			return ERR_PTR(ret);
+		}
+		bsp_priv->regulator = NULL;
 	}
 
 	ret = of_property_read_string(dev->of_node, "clock_in_out", &strings);
@@ -3748,6 +3761,28 @@ static void rk_gmac_remove(struct platform_device *pdev)
 		reset_control_put(bsp_priv->phy_reset);
 }
 
+/*
+ * Stop the MAC's DMA when the system goes down. Without a shutdown hook the receive DMA
+ * keeps running through device_shutdown(): after a kexec it goes on writing received
+ * frames into the buffers the old kernel gave it, which by then belong to the next image
+ * (a kexec'd boot loader found its initrd changed exactly there). Closing the interface
+ * stops the DMA and the MAC as `ip link set dev ... down` does (stmmac_release), as the
+ * Cadence MACB driver does in its own shutdown hook.
+ */
+static void rk_gmac_shutdown(struct platform_device *pdev)
+{
+	struct net_device *ndev = platform_get_drvdata(pdev);
+
+	if (!ndev)
+		return;
+
+	rtnl_lock();
+	if (netif_running(ndev))
+		dev_close(ndev);
+	netif_device_detach(ndev);
+	rtnl_unlock();
+}
+
 #ifdef CONFIG_PM_SLEEP
 static int rk_gmac_suspend(struct device *dev)
 {
@@ -3853,6 +3888,7 @@ MODULE_DEVICE_TABLE(of, rk_gmac_dwmac_match);
 static struct platform_driver rk_gmac_dwmac_driver = {
 	.probe  = rk_gmac_probe,
 	.remove_new = rk_gmac_remove,
+	.shutdown = rk_gmac_shutdown,
 	.driver = {
 		.name           = "rk_gmac-dwmac",
 		.pm		= &rk_gmac_pm_ops,

@@ -30,6 +30,18 @@ struct fbtft_gpio {
 	struct gpio_desc *gpio;
 };
 
+/**
+ * struct fbtft_gpio_lookup - one pinname to legacy GPIO-number mapping, for
+ * platform_data-registered displays with no DT/fwnode (the fbtft_device shim).
+ * Restores the pre-gpiod pdata->gpios[] path the staging core dropped.
+ * @name: pinname (reset, dc, led, db00.., …)
+ * @gpio: global Linux GPIO number (terminate the array with a {} entry)
+ */
+struct fbtft_gpio_lookup {
+	char name[FBTFT_GPIO_NAME_SIZE];
+	int gpio;
+};
+
 struct fbtft_par;
 
 /**
@@ -134,6 +146,7 @@ struct fbtft_display {
  */
 struct fbtft_platform_data {
 	struct fbtft_display display;
+	const struct fbtft_gpio_lookup *gpios;
 	unsigned int rotate;
 	bool bgr;
 	unsigned int fps;

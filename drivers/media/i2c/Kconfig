@@ -516,6 +516,43 @@ config VIDEO_GC8034
 	  To compile this driver as a module, choose M here: the
 	  module will be called gc8034.
 
+config VIDEO_NOVA_FPGA_DVP
+	tristate "NovaStar COEX FPGA DVP multiviewer source (dvp_camera)"
+	depends on I2C && VIDEO_DEV
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  The COEX controllers' (KU20/MX20/MX30/MX40 Pro/CX40 Pro/MX6000
+	  Pro) sender FPGA drives its composited multiviewer frame into the
+	  RK3566 CIF's DVP port (8-bit BT.601, YUYV8_2X8 1920x1080). This
+	  describes that source as a V4L2 sensor subdev on the vendor DT's
+	  i2c0 "fpga, camera"@3c node, as the stock COEX kernel's
+	  "dvp_camera" driver does, so rkcif_dvp registers /dev/video0.
+	  No I2C device is accessed.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called nova-fpga-dvp.
+
+config VIDEO_NOVA_FPGA_MIPI
+	tristate "NovaStar COEX FPGA MIPI CSI-2 video source (MIPI_CAM)"
+	depends on I2C && VIDEO_DEV
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  The CX40 Pro's and MX6000/2000 Pro's sender FPGA also sends its
+	  video to the RK3566 over MIPI CSI-2 (1920x1080 at 60 fps, UYVY8_2X8
+	  by default, a 600 MHz link). This describes each output as a V4L2
+	  sensor subdev on the vendor DT's "fpga,mipi camera0"/"fpga,mipi
+	  camera1"@3c nodes and drives the FPGA's I2C register interface
+	  (id, stream start/stop, test pattern), as the stock COEX kernel's
+	  "MIPI_CAM" driver does, so csi2-dphy -> rkisp / mipi-csi2 -> rkcif
+	  complete their graphs.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called nova-fpga-mipi.
+
 config VIDEO_GC8613
 	tristate "GalaxyCore GC8613 sensor support"
 	depends on I2C && VIDEO_DEV
@@ -2836,6 +2873,22 @@ config VIDEO_KS0127
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ks0127.
+
+config VIDEO_NOVA_FPGA_CSI
+	tristate "NovaStar N-series FPGA CSI-2 preview source (FPGA_CSI)"
+	depends on VIDEO_DEV && I2C
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  The PixelHue N10/N20/P10/P20 main-board FPGA's 2-lane MIPI CSI-2
+	  preview output (1920x1080 UYVY8_2X8), described as a V4L2 sensor
+	  subdev on the vendor DT's i2c4 "lontium,lt6911c" node, as the stock
+	  N-series kernel's "FPGA_CSI" driver does. No I2C device is accessed.
+	  It binds the same compatible as VIDEO_LT6911C: enable one of the two.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called nova-fpga-csi.
 
 config VIDEO_LT6911C
 	tristate "Lontium LT6911UXC decoder"

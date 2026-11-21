@@ -15,7 +15,7 @@ uint static_msg_level = STATIC_ERROR_LEVEL | STATIC_MSG_LEVEL;
 #define DHD_STATIC_MSG(x, args...) \
 do { \
 	if (static_msg_level & STATIC_MSG_LEVEL) { \
-		pr_err("[dhd] STATIC-MSG) %s : " x, __func__, ## args); \
+		pr_info("[dhd] STATIC-MSG) %s : " x, __func__, ## args); \
 	} \
 } while (0)
 #define DHD_STATIC_ERROR(x, args...) \

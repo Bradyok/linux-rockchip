@@ -8235,7 +8235,15 @@ int dhd_get_download_buffer(dhd_pub_t	*dhd, char *file_path, download_type_t com
 #endif /* SUPPORT_OTA_UPDATE */
 	{
 		if (file_path) {
-			ret = dhd_os_get_img_fwreq(&fw, file_path);
+			/*
+			 * The CLM blob is optional: dhd_apply_default_clm() goes on without one
+			 * ("Ignore clm file"), and a chip such as the BCM43438 carries its CLM in
+			 * the firmware. Only the firmware and NVRAM warn when they are missing.
+			 */
+			if (component == CLM_BLOB)
+				ret = dhd_os_get_img_fwreq_nowarn(&fw, file_path);
+			else
+				ret = dhd_os_get_img_fwreq(&fw, file_path);
 			if (ret < 0) {
 				DHD_ERROR(("dhd_os_get_img(Request Firmware API) error : %d\n",
 					ret));
