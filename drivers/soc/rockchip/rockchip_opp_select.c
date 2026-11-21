@@ -569,10 +569,19 @@ static int rockchip_get_leakage_v1(struct device *dev, struct device_node *np,
 	ret = rockchip_nvmem_cell_read_u8(np, "leakage", &value);
 	if (ret)
 		ret = rockchip_nvmem_cell_read_u8(np, lkg_name, &value);
-	if (ret)
-		dev_err(dev, "Failed to get %s\n", lkg_name);
-	else
+	if (ret) {
+		/*
+		 * An OPP table with no leakage cell at all (the RK356x rkvenc table has only
+		 * "pvtm") selects its bin by other means; that is its design, not a failure.
+		 */
+		if (of_property_match_string(np, "nvmem-cell-names", "leakage") < 0 &&
+		    of_property_match_string(np, "nvmem-cell-names", lkg_name) < 0)
+			dev_dbg(dev, "no %s cell\n", lkg_name);
+		else
+			dev_err(dev, "Failed to get %s\n", lkg_name);
+	} else {
 		*leakage = value;
+	}
 
 	return ret;
 }

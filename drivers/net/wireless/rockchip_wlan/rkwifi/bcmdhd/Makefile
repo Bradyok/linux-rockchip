@@ -473,11 +473,20 @@ endif
 endif
 
 ARCH ?= arm64
-BCMDHD_ROOT = $(src)
+# nova-os: $(src) is srctree-RELATIVE up to 6.6 (scripts/Makefile.build:6 `src := $(obj)`)
+# but ABSOLUTE from 6.12 on (same line, `src := $(if $(VPATH),$(VPATH)/)$(obj)`, with
+# VPATH=$(srctree) for an O= build -- Makefile:251-257), so an unconditional
+# $(srctree)/$(src) below yields <srctree>/<srctree>/... and every private header
+# ("typedefs.h") goes missing. Same guard the vendor already uses for its own
+# out-of-tree-style Kbuilds in this tree: drivers/base/arm/Kbuild:31,
+# drivers/gpu/arm/bifrost/Kbuild:27, drivers/video/rockchip/rga3/Makefile:4.
+BCMDHD_ROOT = $(if $(patsubst /%,,$(src)),$(srctree)/$(src),$(src))
 #$(warning "BCMDHD_ROOT=$(BCMDHD_ROOT)")
 EXTRA_CFLAGS = $(DHDCFLAGS)
-EXTRA_CFLAGS += -DDHD_COMPILED=\"$(BCMDHD_ROOT)\"
-EXTRA_CFLAGS += -I$(srctree)/$(BCMDHD_ROOT)/include/ -I$(srctree)/$(BCMDHD_ROOT)/
+# the source directory the driver logs ("... compiled on"), relative to the tree: an absolute build path in
+# the module made two builds of the same source differ
+EXTRA_CFLAGS += -DDHD_COMPILED=\"$(patsubst $(srctree)/%,%,$(BCMDHD_ROOT))\"
+EXTRA_CFLAGS += -I$(BCMDHD_ROOT)/include/ -I$(BCMDHD_ROOT)/
 ifeq ($(CONFIG_AP6XXX),m)
 EXTRA_LDFLAGS += --strip-debug
 endif

@@ -3159,7 +3159,13 @@ static void rockchip_dmcfreq_parse_dt(struct rockchip_dmcfreq *dmcfreq)
 			dev_err(dev, "failed to get vop bandwidth to dmc rate\n");
 	}
 
-	if (rockchip_get_rl_map_talbe(np, "vop-pn-msch-readlatency",
+	/*
+	 * The plane-count to MSCH read-latency table only feeds set_msch_readlatency
+	 * (rockchip_dmc_common.c), which only the RK3399 init installs. On every other
+	 * SoC the table has no user, so it is neither looked up nor missed.
+	 */
+	if (dmcfreq->info.set_msch_readlatency &&
+	    rockchip_get_rl_map_talbe(np, "vop-pn-msch-readlatency",
 				      &dmcfreq->info.vop_pn_rl_tbl))
 		dev_err(dev, "failed to get vop pn to msch rl\n");
 	if (dmcfreq->video_4k_rate)

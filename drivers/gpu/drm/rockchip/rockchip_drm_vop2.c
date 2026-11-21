@@ -7683,8 +7683,12 @@ static int vop2_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_st
 	if (ret)
 		return ret;
 
+	/*
+	 * A fully clipped plane is a valid state (a TEST_ONLY commit before the CRTC is
+	 * enabled clips to 0x0, drm_atomic_helper.c), and this path returns success.
+	 */
 	if (!pstate->visible) {
-		DRM_ERROR("%s is invisible(src: pos[%d, %d] rect[%d x %d] dst: pos[%d, %d] rect[%d x %d]\n",
+		DRM_DEBUG_ATOMIC("%s is invisible(src: pos[%d, %d] rect[%d x %d] dst: pos[%d, %d] rect[%d x %d]\n",
 			  plane->name, pstate->src_x >> 16, pstate->src_y >> 16, pstate->src_w >> 16,
 			  pstate->src_h >> 16, pstate->crtc_x, pstate->crtc_y, pstate->crtc_w,
 			  pstate->crtc_h);
@@ -18992,7 +18996,14 @@ static int vop2_create_crtc(struct vop2 *vop2, uint8_t enabled_vp_mask)
 		}
 
 		ret = vop2_plane_init(vop2, win, possible_crtcs);
-		if (ret)
+		/*
+		 * -EACCES is vop2_plane_init() declining a window by configuration: an AFBC
+		 * window with disable_afbc_win, a Cluster sub-window without
+		 * support-multi-area, a VOP3 Esmart in line-buffer mode. Nothing failed.
+		 */
+		if (ret == -EACCES)
+			DRM_DEBUG_KMS("overlay plane %s not registered by configuration\n", win->name);
+		else if (ret)
 			DRM_WARN("failed to init overlay plane %s\n", win->name);
 	}
 

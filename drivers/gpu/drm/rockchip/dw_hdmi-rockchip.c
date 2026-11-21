@@ -2074,7 +2074,12 @@ static int dw_hdmi_encoder_late_register(struct drm_encoder *encoder)
 	 * HDMI debugfs directory (/sys/kernel/debug/dri/0/hdmiX/) to the
 	 * PHY driver via phy->debugfs.
 	 */
-	if (!hdmi->phy->debugfs)
+	/*
+	 * The PHY is optional (devm_phy_optional_get above): a board whose HDMI TX uses the
+	 * PHY inside the dw-hdmi core, as the RK3566 does, has no phys property and leaves
+	 * this NULL. Every other user in this file checks it first.
+	 */
+	if (hdmi->phy && !hdmi->phy->debugfs)
 		hdmi->phy->debugfs = dw_hdmi_register_debugfs(hdmi->hdmi);
 	dw_hdmi_phy_init(hdmi->hdmi);
 

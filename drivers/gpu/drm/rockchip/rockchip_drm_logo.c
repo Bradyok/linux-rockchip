@@ -819,6 +819,18 @@ static int setup_initial_state(struct drm_device *drm_dev,
 
 	crtc->state->state = state;
 
+	/*
+	 * A route whose U-Boot left no pixel clock (no video,clock: the Rigol scopes' stock
+	 * 2014.10 U-Boot writes the timings only) can match no mode below, as every mode has a
+	 * clock. Skip the connector probe, which for HDMI is an EDID read (a second with some
+	 * sinks), and let the caller close the route as for any other mismatch.
+	 */
+	if (!set->clock) {
+		dev_info(drm_dev->dev, "connector[%s]: no pixel clock from U-Boot; not probed\n",
+			 connector->name);
+		return -EINVAL;
+	}
+
 	conn_state = drm_atomic_get_connector_state(state, connector);
 	if (IS_ERR(conn_state))
 		return PTR_ERR(conn_state);

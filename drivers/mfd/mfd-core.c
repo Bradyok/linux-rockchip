@@ -187,6 +187,15 @@ static int mfd_add_device(struct device *parent, int id,
 	pdev->dev.dma_mask = parent->dma_mask;
 	pdev->dev.dma_parms = parent->dma_parms;
 	pdev->dev.coherent_dma_mask = parent->coherent_dma_mask;
+	/*
+	 * A parent on a bus without DMA (an I2C or SPI client) has no dma_mask, and its
+	 * cells are no DMA masters either. Point the child's dma_mask at its own (zero)
+	 * coherent mask: that is exactly what of_dma_configure_id() coerces a NULL
+	 * dma_mask to (drivers/of/device.c), so the result is unchanged, without the
+	 * "DMA mask not set" warning that is meant for DMA masters a bus forgot.
+	 */
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
 
 	ret = regulator_bulk_register_supply_alias(
 			&pdev->dev, cell->parent_supplies,

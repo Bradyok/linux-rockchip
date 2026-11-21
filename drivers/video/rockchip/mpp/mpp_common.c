@@ -662,7 +662,8 @@ mpp_reset_control_get(struct mpp_dev *mpp, enum MPP_RESET_TYPE type, const char 
 	index = of_property_match_string(mpp->dev->of_node,
 					 "reset-names", shared_name);
 	if (index < 0) {
-		dev_err(mpp->dev, "%s is not found!\n", shared_name);
+		/* Absent: each caller reports a reset it cannot do without. */
+		dev_dbg(mpp->dev, "%s is not found!\n", shared_name);
 		return NULL;
 	}
 
