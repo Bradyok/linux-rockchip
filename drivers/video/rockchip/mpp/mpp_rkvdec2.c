@@ -1296,12 +1296,17 @@ static int rkvdec2_init(struct mpp_dev *mpp)
 	dec->rst_h = mpp_reset_control_get(mpp, RST_TYPE_H, "video_h");
 	if (!dec->rst_h)
 		mpp_err("No hclk reset resource define\n");
+	/*
+	 * The NIU resets are optional: a decoder node that names none (the RK356x rkvdec,
+	 * whose reset-names are video_a/h, cabac, core and hevc_cabac) is reset without
+	 * them, as mpp_safe_reset()/mpp_safe_unreset() skip a NULL control.
+	 */
 	dec->rst_niu_a = mpp_reset_control_get(mpp, RST_TYPE_NIU_A, "niu_a");
 	if (!dec->rst_niu_a)
-		mpp_err("No niu aclk reset resource define\n");
+		dev_dbg(mpp->dev, "No niu aclk reset resource define\n");
 	dec->rst_niu_h = mpp_reset_control_get(mpp, RST_TYPE_NIU_H, "niu_h");
 	if (!dec->rst_niu_h)
-		mpp_err("No niu hclk reset resource define\n");
+		dev_dbg(mpp->dev, "No niu hclk reset resource define\n");
 	dec->rst_core = mpp_reset_control_get(mpp, RST_TYPE_CORE, "video_core");
 	if (!dec->rst_core)
 		mpp_err("No core reset resource define\n");

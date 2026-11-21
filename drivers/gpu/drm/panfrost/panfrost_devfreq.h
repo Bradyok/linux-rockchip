@@ -7,6 +7,7 @@
 #include <linux/devfreq.h>
 #include <linux/spinlock.h>
 #include <linux/ktime.h>
+#include <soc/rockchip/rockchip_opp_select.h>
 
 struct devfreq;
 struct thermal_cooling_device;
@@ -18,6 +19,8 @@ struct panfrost_devfreq {
 	struct thermal_cooling_device *cooling;
 	struct devfreq_simple_ondemand_data gov_data;
 	bool opp_of_table_added;
+	/* the table Rockchip's OPP selection built, on a Rockchip SoC that uses it (panfrost_devfreq.c) */
+	struct rockchip_opp_info rockchip_opp;
 
 	unsigned long current_frequency;
 	unsigned long fast_rate;

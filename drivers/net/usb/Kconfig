@@ -198,10 +198,11 @@ config USB_NET_AX8817X
 	  what other networking devices you have in use.
 
 config USB_NET_AX88179_178A
-	tristate "ASIX AX88179/178A USB 3.0/2.0 to Gigabit Ethernet"
+	tristate "ASIX AX88179/179A/178A USB 2.0/3.0 to 100M/1G/2.5GbE Adapters"
 	depends on USB_USBNET
+	select PHYLINK
+	select AX88796B_PHY
 	select CRC32
-	select PHYLIB
 	default y
 	help
 	  This option adds support for ASIX AX88179 based USB 3.0/2.0
@@ -209,11 +210,24 @@ config USB_NET_AX88179_178A
 
 	  This driver should work with at least the following devices:
 	    * ASIX AX88179
+	    * ASIX AX88179A/B
+	    * ASIX AX88279
+	    * ASIX AX88772D/E
 	    * ASIX AX88178A
 	    * Sitcomm LN-032
 
 	  This driver creates an interface named "ethX", where X depends on
 	  what other networking devices you have in use.
+
+config USB_NET_AX88179A_VENDOR_CONFIG
+	bool "Configure an ASIX AX88179A/B in its vendor mode at enumeration"
+	depends on USB_NET_AX88179_178A
+	help
+	  The ASIX AX88179A/B (0b95:1790, bcdDevice 2.00) offers a vendor-specific
+	  configuration beside CDC NCM and CDC ECM, and the USB core picks CDC NCM.
+	  Say Y to pick the vendor configuration at enumeration instead, which the
+	  ax88179_178a driver serves (a small built-in USB device driver,
+	  ax88179_cfgselector; its "enable" parameter turns it off).
 
 config USB_NET_CDCETHER
 	tristate "CDC Ethernet support (smart devices such as cable modems)"

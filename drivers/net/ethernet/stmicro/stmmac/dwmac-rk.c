@@ -3282,6 +3282,9 @@ static int rk_gmac_phy_power_on(struct rk_priv_data *bsp_priv, bool enable)
 	int ret;
 	struct device *dev = &bsp_priv->pdev->dev;
 
+	if (!ldo)
+		return 0;
+
 	if (enable) {
 		ret = regulator_enable(ldo);
 		if (ret)
@@ -3329,11 +3332,20 @@ static struct rk_priv_data *rk_gmac_setup(struct platform_device *pdev,
 		}
 	}
 
-	bsp_priv->regulator = devm_regulator_get(dev, "phy");
+	/*
+	 * phy-supply is optional: a PHY on an always-on rail has no switchable supply to
+	 * name (the 4.19 BSP's dwmac-rk.c took it with devm_regulator_get_optional too).
+	 * A plain devm_regulator_get() hands such a board a dummy regulator with a
+	 * "supply phy not found" warning.
+	 */
+	bsp_priv->regulator = devm_regulator_get_optional(dev, "phy");
 	if (IS_ERR(bsp_priv->regulator)) {
 		ret = PTR_ERR(bsp_priv->regulator);
-		dev_err_probe(dev, ret, "failed to get phy regulator\n");
-		return ERR_PTR(ret);
+		if (ret != -ENODEV) {
+			dev_err_probe(dev, ret, "failed to get phy regulator\n");
+			return ERR_PTR(ret);
+		}
+		bsp_priv->regulator = NULL;
 	}
 
 	ret = of_property_read_string(dev->of_node, "clock_in_out", &strings);

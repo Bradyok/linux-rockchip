@@ -795,9 +795,17 @@ static void dwcmshc_rk3568_set_clock(struct sdhci_host *host, unsigned int clock
 	if (clock <= 52000000) {
 		/* Disable DLL */
 		sdhci_writel(host, 0, DWCMSHC_EMMC_DLL_CTRL);
+		/*
+		 * The mmc core itself runs HS200 timing at the HS clock while it
+		 * switches: mmc_select_hs200() sets the timing, then hs_max_dtr (52 MHz),
+		 * and checks the switch with SEND_STATUS before tuning at full speed
+		 * ("Some cards don't handle SEND_STATUS reliably at the initial
+		 * frequency", core/mmc.c). Leaving the DLL off there is the expected
+		 * path, so it is logged at debug level.
+		 */
 		if (host->mmc->ios.timing == MMC_TIMING_MMC_HS200 ||
 		    host->mmc->ios.timing == MMC_TIMING_MMC_HS400) {
-			dev_err(mmc_dev(host->mmc),
+			dev_dbg(mmc_dev(host->mmc),
 				"Can't reduce the clock below 52MHz in HS200/HS400 mode");
 			goto exit;
 		}

@@ -448,7 +448,7 @@ static void repo_hpd_event(struct work_struct *p_work)
 			if (hdmi->plat_data->set_ddc_io)
 				hdmi->plat_data->set_ddc_io(data, hdmi->hpd_state);
 #if IS_REACHABLE(CONFIG_DRM_DW_HDMI_CEC)
-			if (hdmi->cec_adap->devnode.registered)
+			if (hdmi->cec_adap && hdmi->cec_adap->devnode.registered)
 				cec_queue_pin_hpd_event(hdmi->cec_adap,
 							hdmi->hpd_state,
 							ktime_get());
@@ -5518,7 +5518,7 @@ struct dw_hdmi *dw_hdmi_probe(struct platform_device *pdev,
 		cec.ops = &dw_hdmi_cec_ops;
 		cec.irq = irq;
 
-		irq = platform_get_irq(pdev, 1);
+		irq = platform_get_irq_optional(pdev, 1);
 		if (irq < 0)
 			dev_dbg(hdmi->dev, "can't get cec wake up irq\n");
 

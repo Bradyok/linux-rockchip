@@ -3522,12 +3522,16 @@ static struct dw_mci_board *dw_mci_parse_dt(struct dw_mci *host)
 	host->pinctrl = devm_pinctrl_get(host->dev);
 	if (!IS_ERR(host->pinctrl)) {
 		host->normal_state = pinctrl_lookup_state(host->pinctrl, "normal");
-		if (IS_ERR(host->normal_state))
-			dev_warn(dev, "No normal pinctrl state\n");
-
 		host->idle_state = pinctrl_lookup_state(host->pinctrl, "idle");
-		if (IS_ERR(host->idle_state))
-			dev_warn(dev, "No idle pinctrl state\n");
+
+		/*
+		 * Pad idling is optional. A host that names neither state (a
+		 * non-removable SDIO slot has no card-detect pad to idle) simply never
+		 * switches; only a host that names one of the pair is misconfigured.
+		 */
+		if (IS_ERR(host->normal_state) != IS_ERR(host->idle_state))
+			dev_warn(dev, "No %s pinctrl state\n",
+				 IS_ERR(host->normal_state) ? "normal" : "idle");
 
 		if (!IS_ERR(host->normal_state) && !IS_ERR(host->idle_state))
 			pinctrl_select_state(host->pinctrl, host->idle_state);

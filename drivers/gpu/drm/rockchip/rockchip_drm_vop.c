@@ -2347,8 +2347,9 @@ static int vop_plane_atomic_check(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
+	/* A fully clipped plane is a valid state, and this path returns success. */
 	if (!new_plane_state->visible) {
-		DRM_ERROR("%s is invisible(src: pos[%d, %d] rect[%d x %d] dst: pos[%d, %d] rect[%d x %d]\n",
+		DRM_DEBUG_ATOMIC("%s is invisible(src: pos[%d, %d] rect[%d x %d] dst: pos[%d, %d] rect[%d x %d]\n",
 			  plane->name, new_plane_state->src_x >> 16, new_plane_state->src_y >> 16, new_plane_state->src_w >> 16,
 			  new_plane_state->src_h >> 16, new_plane_state->crtc_x, new_plane_state->crtc_y, new_plane_state->crtc_w,
 			  new_plane_state->crtc_h);
